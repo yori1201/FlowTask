@@ -165,26 +165,6 @@ Do not assume a framework, database, backend, hosting provider, or synchronizati
 
 ---
 
-## Project Status
-
-This repository is the project workspace. The status below reflects product planning, not verified implementation progress.
-
-| Area | Product status |
-|---|---|
-| Product direction and core requirements | Defined |
-| Task management | Planned |
-| Notes management | Planned |
-| Projects | Planned |
-| Calendar and reminders | Planned |
-| Offline-first behavior | Required |
-| Cross-device synchronization | Planned |
-| AI chat and integrations | Planned for a later update |
-| Technology stack | To be finalized |
-
-Update this section as features are implemented and tested.
-
----
-
 ## Product Philosophy
 
 **Capture. Organize. Execute. Remember.**
