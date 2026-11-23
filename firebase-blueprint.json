@@ -1,0 +1,151 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Authenticated user profile and workspace backup metadata.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "description": "Firebase Auth UID of the owner" },
+        "displayName": { "type": "string", "description": "User display name" },
+        "email": { "type": "string", "description": "User email address" },
+        "photoUrl": { "type": "string", "description": "Optional avatar URL" },
+        "lastBackupAtMillis": { "type": "integer", "description": "Epoch millis of last completed backup" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Server timestamp set via FieldValue.serverTimestamp()" },
+        "updatedAt": { "type": "string", "format": "date-time", "description": "Server timestamp set via FieldValue.serverTimestamp()" }
+      },
+      "required": ["userId", "displayName", "createdAt", "updatedAt"]
+    },
+    "Project": {
+      "title": "Project",
+      "description": "Personal project grouping tasks and notes.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "description": "Owner Firebase Auth UID" },
+        "name": { "type": "string", "description": "Project title" },
+        "description": { "type": "string", "description": "Optional project description" },
+        "colorHex": { "type": "string", "description": "Hex accent color code" },
+        "iconName": { "type": "string", "description": "Material icon identifier" },
+        "archived": { "type": "boolean", "description": "Whether project is archived" },
+        "deleted": { "type": "boolean", "description": "Soft-delete tombstone flag" },
+        "revision": { "type": "integer", "description": "Monotonic revision counter for conflict detection" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Server timestamp via FieldValue.serverTimestamp()" },
+        "updatedAt": { "type": "string", "format": "date-time", "description": "Server timestamp via FieldValue.serverTimestamp()" }
+      },
+      "required": ["userId", "name", "colorHex", "iconName", "archived", "deleted", "revision", "createdAt", "updatedAt"]
+    },
+    "Task": {
+      "title": "Task",
+      "description": "Personal task item with priority, deadline, reminder, recurrence, and subtasks.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "description": "Owner Firebase Auth UID" },
+        "title": { "type": "string", "description": "Task title" },
+        "description": { "type": "string", "description": "Task details" },
+        "status": { "type": "string", "enum": ["TODO", "IN_PROGRESS", "COMPLETED"], "description": "Workflow status" },
+        "priority": { "type": "string", "enum": ["LOW", "MEDIUM", "HIGH", "URGENT"], "description": "Task priority" },
+        "category": { "type": "string", "description": "Task category label" },
+        "projectId": { "type": "string", "description": "Optional linked project ID" },
+        "startAtMillis": { "type": "integer", "description": "Optional start date epoch millis" },
+        "dueAtMillis": { "type": "integer", "description": "Optional deadline epoch millis" },
+        "reminderAtMillis": { "type": "integer", "description": "Optional local reminder trigger epoch millis" },
+        "completedAtMillis": { "type": "integer", "description": "Optional completion timestamp epoch millis" },
+        "recurrence": { "type": "string", "enum": ["NONE", "DAILY", "WEEKLY", "MONTHLY", "YEARLY"], "description": "Recurrence rule" },
+        "tags": { "type": "array", "description": "Bounded list of up to 10 string tags" },
+        "subtasks": { "type": "array", "description": "Bounded list of up to 20 subtask maps (id, title, done)" },
+        "archived": { "type": "boolean", "description": "Archive status" },
+        "deleted": { "type": "boolean", "description": "Soft-delete tombstone flag" },
+        "revision": { "type": "integer", "description": "Monotonic revision counter" },
+        "deviceId": { "type": "string", "description": "Last modifying device identifier" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Server timestamp via FieldValue.serverTimestamp()" },
+        "updatedAt": { "type": "string", "format": "date-time", "description": "Server timestamp via FieldValue.serverTimestamp()" }
+      },
+      "required": ["userId", "title", "description", "status", "priority", "category", "recurrence", "tags", "subtasks", "archived", "deleted", "revision", "deviceId", "createdAt", "updatedAt"]
+    },
+    "Note": {
+      "title": "Note",
+      "description": "Standalone structured markdown note linkable to tasks and projects.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "description": "Owner Firebase Auth UID" },
+        "title": { "type": "string", "description": "Note heading" },
+        "content": { "type": "string", "description": "Structured markdown content" },
+        "category": { "type": "string", "description": "Category label" },
+        "projectId": { "type": "string", "description": "Optional linked project ID" },
+        "tags": { "type": "array", "description": "Bounded list of up to 10 tags" },
+        "linkedTaskIds": { "type": "array", "description": "Bounded list of up to 20 linked task IDs" },
+        "pinned": { "type": "boolean", "description": "Pinned to top" },
+        "favorite": { "type": "boolean", "description": "Starred favorite" },
+        "archived": { "type": "boolean", "description": "Archive flag" },
+        "deleted": { "type": "boolean", "description": "Soft-delete tombstone flag" },
+        "wordCount": { "type": "integer", "description": "Computed word count" },
+        "revision": { "type": "integer", "description": "Monotonic revision counter" },
+        "deviceId": { "type": "string", "description": "Last modifying device identifier" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Server timestamp via FieldValue.serverTimestamp()" },
+        "updatedAt": { "type": "string", "format": "date-time", "description": "Server timestamp via FieldValue.serverTimestamp()" }
+      },
+      "required": ["userId", "title", "content", "category", "tags", "linkedTaskIds", "pinned", "favorite", "archived", "deleted", "wordCount", "revision", "deviceId", "createdAt", "updatedAt"]
+    },
+    "ReminderEvent": {
+      "title": "ReminderEvent",
+      "description": "Scheduled or delivered reminder notification history item.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "description": "Owner Firebase Auth UID" },
+        "taskId": { "type": "string", "description": "Optional linked task ID" },
+        "title": { "type": "string", "description": "Notification title" },
+        "message": { "type": "string", "description": "Notification body" },
+        "reminderType": { "type": "string", "enum": ["TASK_REMINDER", "DEADLINE", "OVERDUE", "DAILY_SUMMARY", "SYNC_ALERT"], "description": "Category of notification" },
+        "scheduledAtMillis": { "type": "integer", "description": "Trigger epoch millis" },
+        "snoozedUntilMillis": { "type": "integer", "description": "Optional snoozed trigger epoch millis" },
+        "dismissed": { "type": "boolean", "description": "Whether user dismissed or acknowledged" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Server timestamp via FieldValue.serverTimestamp()" },
+        "updatedAt": { "type": "string", "format": "date-time", "description": "Server timestamp via FieldValue.serverTimestamp()" }
+      },
+      "required": ["userId", "title", "message", "reminderType", "scheduledAtMillis", "dismissed", "createdAt", "updatedAt"]
+    },
+    "BackupSnapshot": {
+      "title": "BackupSnapshot",
+      "description": "Versioned cloud backup metadata and native map snapshot for recovery.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "description": "Owner Firebase Auth UID" },
+        "formatVersion": { "type": "integer", "description": "Backup schema format version" },
+        "label": { "type": "string", "description": "Human-readable backup label" },
+        "taskCount": { "type": "integer", "description": "Number of tasks included" },
+        "noteCount": { "type": "integer", "description": "Number of notes included" },
+        "projectCount": { "type": "integer", "description": "Number of projects included" },
+        "checksum": { "type": "string", "description": "SHA-256 integrity checksum" },
+        "snapshotData": { "type": "object", "description": "Native structured map of backed up projects, tasks, and notes" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Server timestamp via FieldValue.serverTimestamp()" },
+        "updatedAt": { "type": "string", "format": "date-time", "description": "Server timestamp via FieldValue.serverTimestamp()" }
+      },
+      "required": ["userId", "formatVersion", "label", "taskCount", "noteCount", "projectCount", "checksum", "snapshotData", "createdAt", "updatedAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "Private authenticated user profile document."
+    },
+    "/users/{userId}/projects/{projectId}": {
+      "schema": { "$ref": "#/entities/Project" },
+      "description": "User-scoped personal projects."
+    },
+    "/users/{userId}/tasks/{taskId}": {
+      "schema": { "$ref": "#/entities/Task" },
+      "description": "User-scoped daily tasks with reminders, subtasks, and recurrence."
+    },
+    "/users/{userId}/notes/{noteId}": {
+      "schema": { "$ref": "#/entities/Note" },
+      "description": "User-scoped standalone notes linkable to tasks and projects."
+    },
+    "/users/{userId}/reminders/{reminderId}": {
+      "schema": { "$ref": "#/entities/ReminderEvent" },
+      "description": "User-scoped reminder history and notification log."
+    },
+    "/users/{userId}/backups/{backupId}": {
+      "schema": { "$ref": "#/entities/BackupSnapshot" },
+      "description": "User-scoped versioned cloud backup snapshots."
+    }
+  }
+}

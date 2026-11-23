@@ -1,0 +1,9 @@
+<resources>
+    <string name="app_name">TaskFlow</string>
+    <string name="notification_channel_name">Pengingat Tugas TaskFlow</string>
+    <string name="notification_channel_desc">Pengingat otomatis untuk jadwal dan deadline tugas harian</string>
+    <string name="action_complete_task">Selesai</string>
+    <string name="action_snooze_task">Tunda 15m</string>
+    <string name="auth_sign_in_google">Masuk dengan Google</string>
+    <string name="auth_tagline">Kelola tugas harian, catatan, jadwal, dan pengingat otomatis dengan sinkronisasi cloud real-time.</string>
+</resources>
