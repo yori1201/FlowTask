@@ -33,20 +33,16 @@ jobs:
             echo "configured=false" >> "$GITHUB_OUTPUT"
             echo "::notice::Secrets KEYSTORE_BASE64 / KEYSTORE_PASSWORD belum diatur - melewati build release. Cara mengatur: README bagian 'CI & Rilis'."
           fi
-
       - name: Checkout
         if: steps.cfg.outputs.configured == 'true'
         uses: actions/checkout@v4
-
       - name: Set up JDK 21
         if: steps.cfg.outputs.configured == 'true'
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '21'
-
       - name: Set up Gradle 9.6.1
-      fi
         if: steps.cfg.outputs.configured == 'true'
         uses: gradle/actions/setup-gradle@v4
         with:
@@ -60,7 +56,6 @@ jobs:
       # GOOGLE_SERVICES_JSON (base64 file asli dari Firebase Console) sudah
       # diatur, file asli dipakai supaya login Google aktif di APK rilis.
       # Bila belum, placeholder di bawah yang dipakai (mode lokal tetap jalan).
-
       - name: Siapkan google-services.json
         if: steps.cfg.outputs.configured == 'true'
         env:
@@ -69,7 +64,7 @@ jobs:
           mkdir -p app
           if [ -n "$GOOGLE_SERVICES_JSON" ]; then
             echo "$GOOGLE_SERVICES_JSON" | base64 -d > app/google-services.json
-        else
+          else
             cat > app/google-services.json <<'EOF'
           {
             "project_info": {
