@@ -45,11 +45,11 @@ jobs:
           distribution: temurin
           java-version: '21'
 
-      - name: Set up Gradle 9.3.1
+      - name: Set up Gradle 9.6.1
         if: steps.cfg.outputs.configured == 'true'
         uses: gradle/actions/setup-gradle@v4
         with:
-          gradle-version: '9.3.1'
+          gradle-version: '9.6.1'
 
       # SDK Android sudah preinstall di runner ubuntu-latest (ANDROID_HOME
       # diset, lisensi diterima). AGP otomatis memasang komponen yang kurang.

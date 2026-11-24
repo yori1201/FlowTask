@@ -211,7 +211,7 @@ reserved by the repository owner.
 
 ## Setup
 
-1. **Kebutuhan**: JDK 21, Android SDK (API 36), Gradle 9.3.1 (lihat
+1. **Kebutuhan**: JDK 21, Android SDK (API 36), Gradle 9.6.1 (lihat
    `gradle/wrapper/gradle-wrapper.properties`).
 2. **google-services.json**: file ini sengaja tidak di-commit. Ambil dari
    Firebase Console (Project settings → Your apps → Android) dan letakkan di
