@@ -4,7 +4,22 @@ Aplikasi produktivitas pribadi untuk mengelola tugas, catatan, jadwal, proyek,
 dan pengingat dalam satu tempat. Dibangun Android-native (Kotlin + Jetpack
 Compose) dengan pendekatan offline-first dan sinkronisasi cloud Firestore.
 
-> PRD: lihat `public/assets/aistudio/TASKFLOW_PRD_v1.0.md`
+> PRD: lihat `public/assets/aistudio/TASKFLOW_PRD_v1.0_2e483265.md`
+
+## Unduh & Pasang (APK)
+
+Cara tercepat memakai TaskFlow — tanpa build apa pun:
+
+1. Buka halaman **[Releases](../../releases/latest)** repo ini.
+2. Unduh aset `TaskFlow-*-release.apk` (± 3,6 MB).
+3. Buka file itu di HP Android → izinkan "instal aplikasi tidak dikenal"
+   bila diminta → **Install**.
+4. Saat pertama dibuka, pilih **"Lanjutkan tanpa akun"** — semua fitur
+   (tugas, catatan, kalender, pengingat, backup) langsung berfungsi tanpa
+   internet.
+
+APK ditandatangani keystore rilis TaskFlow (skema v2). Pembaruan hanya bisa
+dipasang di atas instalasi bertanda tangan sama — jangan uninstall dulu.
 
 ## Stack
 
@@ -66,10 +81,22 @@ app/src/main/java/com/example/
 - Auto-backup Android dimatikan (`allowBackup=false`); daya tahan data dijamin
   oleh sinkronisasi Firestore + backup cloud + ekspor JSON.
 
-## CI
+## CI & Rilis
 
-`.github/workflows/ci.yml` menjalankan build + unit test (job `android`) dan
-uji security rules lewat emulator (job `rules`) pada setiap push/pull-request.
+- `.github/workflows/ci.yml` menjalankan build + unit test (job `android`)
+  dan uji security rules lewat emulator (job `rules`) pada setiap
+  push/pull-request.
+- `.github/workflows/release.yml` otomatis membangun APK release ter-sign
+  dan melampirkannya ke GitHub Release setiap kali tag `v*` di-push.
+  Aktivasi (sekali saja): tambahkan dua *repo secrets*
+  **Settings → Secrets and variables → Actions**:
+  1. `KEYSTORE_BASE64` — isi `my-upload-key.jks` dalam base64
+     (Linux/macOS: `base64 -w 0 my-upload-key.jks`)
+  2. `KEYSTORE_PASSWORD` — password keystore (store & key sama)
+
+  Lalu: `git tag v1.2.1 && git push origin v1.2.1` — APK ter-publish
+  otomatis di halaman Releases. Tanpa kedua secret ini job dilewati
+  (skipped) tanpa memerahkan CI.
 
 ## Mode Lokal (v1.2.0)
 
@@ -90,7 +117,7 @@ semua sinkronisasi lintas perangkat berjalan seperti sebelumnya.
 export KEYSTORE_PATH=$PWD/my-upload-key.jks
 export STORE_PASSWORD=...   # lih. keystore pribadi Anda
 export KEY_PASSWORD=...
-./gradlew assembleRelease   # output: app/build/outputs/apk/release/
+gradle :app:assembleRelease # output: app/build/outputs/apk/release/
 ```
 
 Keystore (`my-upload-key.jks`) TIDAK di-commit. Simpan baik-baik: APK
