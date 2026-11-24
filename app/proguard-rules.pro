@@ -1,21 +1,21 @@
-# Add project specific ProGuard rules here.
-# You can control the set of applied configuration files using the
-# proguardFiles setting in build.gradle.
-#
-# For more details, see
-#   http://developer.android.com/guide/developing/tools/proguard.html
+# TaskFlow — R8/ProGuard rules (B-01: minify release aktif)
 
-# If your project uses WebView with JS, uncomment the following
-# and specify the fully qualified class name to the JavaScript interface
-# class:
-#-keepclassmembers class fqcn.of.javascript.interface.for.webview {
-#   public *;
-#}
+# Simpan nomor baris untuk crash report yang bisa dibaca, sembunyikan nama file sumber.
+-keepattributes SourceFile,LineNumberTable
+-renamesourcefileattribute SourceFile
 
-# Uncomment this to preserve the line number information for
-# debugging stack traces.
-#-keepattributes SourceFile,LineNumberTable
+# Model Firestore dipetakan lewat refleksi (toObject) — anotasi @Keep sudah
+# melindunginya, tetapi jaga konstruktor tanpa-argumen secara eksplisit agar
+# deserialisasi tidak pecah oleh R8.
+-keep class com.example.model.** {
+    public <init>();
+    <fields>;
+}
 
-# If you keep the line number information, uncomment this to
-# hide the original source file name.
-#-renamesourcefileattribute SourceFile
+# Firestore menggunakan generik saat decode koleksi.
+-keepattributes Signature,InnerClasses,EnclosingMethod
+
+# Firebase Auth / Firestore membawa consumer rules sendiri; tampilkan peringatan
+# dependensi opsional yang tidak dipakai alih-alih gagal build.
+-dontwarn org.slf4j.**
+-dontwarn javax.annotation.**
