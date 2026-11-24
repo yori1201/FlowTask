@@ -217,6 +217,12 @@ reserved by the repository owner.
    Firebase Console (Project settings → Your apps → Android) dan letakkan di
    `app/`. Tanpa file ini, build tetap berjalan dengan peringatan
    (`MissingGoogleServicesStrategy.WARN`), tetapi Firebase tidak akan aktif saat runtime.
+   Daftarkan dulu aplikasi Android `com.aistudio.taskflow.kqzpmv` di project
+   Firebase yang sama dengan database di `firebase_applet_config.xml`,
+   aktifkan metode masuk Google, dan daftarkan sidik jari SHA-1 keystore
+   yang dipakai menandatangani APK (tanpa SHA-1, login Google ditolak).
+   Untuk build CI/release, file yang sama dimasukkan sebagai secret
+   `GOOGLE_SERVICES_JSON` (lihat bagian CI & Rilis).
 3. **Firestore database ID**: dikonfigurasi lewat
    `app/src/main/res/values/firebase_applet_config.xml` (hasil injeksi AI Studio).
    Sesuaikan bila Anda membuat project Firebase sendiri.
@@ -269,11 +275,16 @@ app/src/main/java/com/example/
   push/pull-request.
 - `.github/workflows/release.yml` otomatis membangun APK release ter-sign
   dan melampirkannya ke GitHub Release setiap kali tag `v*` di-push.
-  Aktivasi (sekali saja): tambahkan dua *repo secrets*
+  Aktivasi (sekali saja): tambahkan tiga *repo secrets*
   **Settings → Secrets and variables → Actions**:
   1. `KEYSTORE_BASE64` — isi `my-upload-key.jks` dalam base64
      (Linux/macOS: `base64 -w 0 my-upload-key.jks`)
   2. `KEYSTORE_PASSWORD` — password keystore (store & key sama)
+3. `GOOGLE_SERVICES_JSON` — isi `app/google-services.json` asli dari
+   Firebase Console dalam base64
+   (Linux/macOS: `base64 -w 0 app/google-services.json`).
+   Tanpa secret ini CI/release tetap jalan, tapi APK memakai dummy dan
+   tombol "Masuk dengan Google" tidak berfungsi; mode lokal tetap jalan.
 
   Lalu: `git tag v1.2.1 && git push origin v1.2.1` — APK ter-publish
   otomatis di halaman Releases. Tanpa kedua secret ini job dilewati
