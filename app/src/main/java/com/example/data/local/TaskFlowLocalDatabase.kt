@@ -94,14 +94,20 @@ interface NoteDraftDao {
 }
 
 @Database(
-    entities = [SyncLogEntity::class, SyncConflictEntity::class, NoteDraftEntity::class],
-    version = 1,
+    entities = [
+        SyncLogEntity::class,
+        SyncConflictEntity::class,
+        NoteDraftEntity::class,
+        LocalEntityRow::class
+    ],
+    version = 2,
     exportSchema = false
 )
 abstract class TaskFlowLocalDatabase : RoomDatabase() {
     abstract fun syncLogDao(): SyncLogDao
     abstract fun syncConflictDao(): SyncConflictDao
     abstract fun noteDraftDao(): NoteDraftDao
+    abstract fun localEntityDao(): LocalEntityDao
 
     companion object {
         @Volatile
