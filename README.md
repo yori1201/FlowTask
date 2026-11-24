@@ -70,3 +70,28 @@ app/src/main/java/com/example/
 
 `.github/workflows/ci.yml` menjalankan build + unit test (job `android`) dan
 uji security rules lewat emulator (job `rules`) pada setiap push/pull-request.
+
+## Mode Lokal (v1.2.0)
+
+Aplikasi kini dapat dipakai **tanpa akun Google** — pilih "Lanjutkan tanpa
+akun" pada layar masuk. Seluruh data (tugas, catatan, proyek, kalender,
+pengingat, backup) tersimpan di Room pada perangkat dan tidak pernah
+menyentuh Firestore. Jalur cloud tetap utuh: begitu masuk dengan Google,
+semua sinkronisasi lintas perangkat berjalan seperti sebelumnya.
+
+- Data mode lokal terpisah dari data akun (pemilik `local-user`).
+- Aksi "Selesai" dari notifikasi dan penjadwalan ulang pengingat setelah
+  reboot berfungsi di kedua mode.
+- Backup/restore dan ekspor JSON tetap tersedia di mode lokal.
+
+## Build Release Bertanda Tangan
+
+```bash
+export KEYSTORE_PATH=$PWD/my-upload-key.jks
+export STORE_PASSWORD=...   # lih. keystore pribadi Anda
+export KEY_PASSWORD=...
+./gradlew assembleRelease   # output: app/build/outputs/apk/release/
+```
+
+Keystore (`my-upload-key.jks`) TIDAK di-commit. Simpan baik-baik: APK
+pembaruan harus ditandatangani dengan kunci yang sama.
