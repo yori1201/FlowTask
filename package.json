@@ -1,0 +1,12 @@
+{
+  "name": "taskflow-rules-tests",
+  "private": true,
+  "description": "Firestore Security Rules tests untuk TaskFlow",
+  "scripts": {
+    "test:rules": "firebase emulators:exec --only firestore \"node --test firestore.test.js\""
+  },
+  "devDependencies": {
+    "@firebase/rules-unit-testing": "^6.0.0",
+    "firebase-tools": "^15.0.0"
+  }
+}

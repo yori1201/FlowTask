@@ -17,3 +17,10 @@ local.properties
 .env
 debug.keystore
 *-debug.log
+node_modules/
+package-lock.json
+.firebase/
+firestore-debug.log
+
+# Dummy untuk CI/build lokal — GANTI dengan file asli dari Firebase Console
+app/google-services.json
