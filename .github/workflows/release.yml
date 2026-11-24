@@ -3,10 +3,11 @@ name: Release APK
 # Membangun APK RELEASE ter-sign secara otomatis setiap kali tag v* di-push,
 # lalu melampirkan APK-nya ke GitHub Release.
 #
-# SYARAT (sekali saja, lihat README bagian "Rilis / Release"):
-#   1. Repo secret KEYSTORE_BASE64  = isi my-upload-key.jks dalam base64
+# SYARAT (sekali saja, lihat README bagian "CI & Rilis"):
+#   1. Repo secret KEYSTORE_BASE64   = isi my-upload-key.jks dalam base64
 #   2. Repo secret KEYSTORE_PASSWORD = password keystore (store & key sama)
-# Tanpa kedua secret ini job otomatis di-skip (tidak gagal, tidak merahkan).
+# Tanpa kedua secret ini semua langkah build dilewati dan workflow selesai
+# hijau dengan notifikasi (bukan gagal).
 
 on:
   push:
@@ -17,23 +18,39 @@ jobs:
   release:
     name: Build & publish APK release
     runs-on: ubuntu-latest
-    if: ${{ secrets.KEYSTORE_BASE64 != '' && secrets.KEYSTORE_PASSWORD != '' }}
     permissions:
       contents: write
     steps:
+      - name: Cek konfigurasi keystore
+        id: cfg
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+        run: |
+          if [ -n "$KEYSTORE_BASE64" ] && [ -n "$KEYSTORE_PASSWORD" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Secrets KEYSTORE_BASE64 / KEYSTORE_PASSWORD belum diatur - melewati build release. Cara mengatur: README bagian 'CI & Rilis'."
+          fi
+
       - name: Checkout
+        if: steps.cfg.outputs.configured == 'true'
         uses: actions/checkout@v4
 
       - name: Set up JDK 21
+        if: steps.cfg.outputs.configured == 'true'
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '21'
 
       - name: Set up Android SDK
+        if: steps.cfg.outputs.configured == 'true'
         uses: android-actions/setup-android@v3
 
       - name: Set up Gradle 9.3.1
+        if: steps.cfg.outputs.configured == 'true'
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '9.3.1'
@@ -42,6 +59,7 @@ jobs:
       # karena MissingGoogleServicesStrategy.WARN; resource default_* dihasilkan
       # dari placeholder di bawah. Mode lokal tetap berfungsi penuh.
       - name: Generate placeholder google-services.json
+        if: steps.cfg.outputs.configured == 'true'
         run: |
           mkdir -p app
           cat > app/google-services.json <<'EOF'
@@ -69,6 +87,7 @@ jobs:
           EOF
 
       - name: Decode keystore rilis
+        if: steps.cfg.outputs.configured == 'true'
         env:
           KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
@@ -79,14 +98,17 @@ jobs:
           echo "KEY_PASSWORD=$KEYSTORE_PASSWORD" >> "$GITHUB_ENV"
 
       - name: Build APK release (R8)
+        if: steps.cfg.outputs.configured == 'true'
         run: gradle :app:assembleRelease --no-daemon --stacktrace
 
       - name: Ganti nama APK sesuai tag
+        if: steps.cfg.outputs.configured == 'true'
         run: |
           APK=app/build/outputs/apk/release/app-release.apk
           mv "$APK" "TaskFlow-${GITHUB_REF_NAME}-release.apk"
 
       - name: Lampirkan ke GitHub Release
+        if: steps.cfg.outputs.configured == 'true'
         uses: softprops/action-gh-release@v2
         with:
           files: TaskFlow-${{ github.ref_name }}-release.apk
