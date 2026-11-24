@@ -45,15 +45,14 @@ jobs:
           distribution: temurin
           java-version: '21'
 
-      - name: Set up Android SDK
-        if: steps.cfg.outputs.configured == 'true'
-        uses: android-actions/setup-android@v3
-
       - name: Set up Gradle 9.3.1
         if: steps.cfg.outputs.configured == 'true'
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '9.3.1'
+
+      # SDK Android sudah preinstall di runner ubuntu-latest (ANDROID_HOME
+      # diset, lisensi diterima). AGP otomatis memasang komponen yang kurang.
 
       # google-services.json tidak ada di repo (disengaja). Build tetap jalan
       # karena MissingGoogleServicesStrategy.WARN; resource default_* dihasilkan

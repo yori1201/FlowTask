@@ -19,13 +19,15 @@ jobs:
           distribution: temurin
           java-version: '21'
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
-
       - name: Set up Gradle 9.3.1
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '9.3.1'
+
+      # SDK Android sudah preinstall di runner ubuntu-latest (ANDROID_HOME
+      # diset, lisensi diterima). AGP otomatis memasang komponen yang kurang.
+      # Catatan: android-actions/setup-android@v3 tidak dipakai lagi karena
+      # mencoba menginstal paket legacy 'tools' yang sudah dihapus Google.
 
       # google-services.json tidak ada di repo — build tetap jalan karena
       # strategi MissingGoogleServicesStrategy.WARN sudah diatur di app/build.gradle.kts.
