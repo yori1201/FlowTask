@@ -63,6 +63,10 @@ interface SyncLogDao {
 
     @Query("DELETE FROM sync_logs WHERE userId = :userId")
     suspend fun clearLogs(userId: String)
+
+    /** C-08: pangkas log yang lebih tua dari cutoff agar tabel tidak tumbuh tanpa batas. */
+    @Query("DELETE FROM sync_logs WHERE createdAtMillis < :cutoffMillis")
+    suspend fun deleteOlderThan(cutoffMillis: Long)
 }
 
 @Dao

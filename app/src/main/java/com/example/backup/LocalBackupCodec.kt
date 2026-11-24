@@ -21,6 +21,84 @@ object LocalBackupCodec {
         return bytes.joinToString("") { "%02x".format(it) }.take(32)
     }
 
+    /**
+     * S-04: checksum snapshot cloud dihitung ulang dari struktur canonical
+     * yang sama dengan saat backup dibuat, lalu dibandingkan dengan nilai
+     * tersimpan — bukan sekadar memeriksa panjang string.
+     */
+    fun computeSnapshotChecksum(
+        projects: List<ProjectItem>,
+        tasks: List<TaskItem>,
+        notes: List<NoteItem>
+    ): String = computeChecksum(buildBackupDataJson(projects, tasks, notes).toString())
+
+    /** Struktur JSON canonical — dipakai encode dan verifikasi checksum. */
+    internal fun buildBackupDataJson(
+        projects: List<ProjectItem>,
+        tasks: List<TaskItem>,
+        notes: List<NoteItem>
+    ): JSONObject {
+        return JSONObject().apply {
+            put("projects", JSONArray().apply {
+                projects.filter { !it.deleted }.forEach { p ->
+                    put(JSONObject().apply {
+                        put("docId", p.id)
+                        put("name", p.name)
+                        put("description", p.description ?: "")
+                        put("colorHex", p.colorHex)
+                        put("iconName", p.iconName)
+                        put("archived", p.archived)
+                    })
+                }
+            })
+            put("tasks", JSONArray().apply {
+                tasks.filter { !it.deleted }.forEach { t ->
+                    put(JSONObject().apply {
+                        put("docId", t.id)
+                        put("title", t.title)
+                        put("description", t.description)
+                        put("status", t.status)
+                        put("priority", t.priority)
+                        put("category", t.category)
+                        if (t.projectId != null) put("projectId", t.projectId)
+                        if (t.dueAtMillis != null) put("dueAtMillis", t.dueAtMillis)
+                        if (t.reminderAtMillis != null) put("reminderAtMillis", t.reminderAtMillis)
+                        if (t.completedAtMillis != null) put("completedAtMillis", t.completedAtMillis)
+                        put("recurrence", t.recurrence)
+                        put("tags", JSONArray(t.tags))
+                        put("subtasks", JSONArray().apply {
+                            t.subtasks.forEach { st ->
+                                put(JSONObject().apply {
+                                    put("id", st.id)
+                                    put("title", st.title)
+                                    put("done", st.done)
+                                })
+                            }
+                        })
+                        put("archived", t.archived)
+                    })
+                }
+            })
+            put("notes", JSONArray().apply {
+                notes.filter { !it.deleted }.forEach { n ->
+                    put(JSONObject().apply {
+                        put("docId", n.id)
+                        put("title", n.title)
+                        put("content", n.content)
+                        put("category", n.category)
+                        if (n.projectId != null) put("projectId", n.projectId)
+                        put("tags", JSONArray(n.tags))
+                        put("linkedTaskIds", JSONArray(n.linkedTaskIds))
+                        put("pinned", n.pinned)
+                        put("favorite", n.favorite)
+                        put("archived", n.archived)
+                        put("wordCount", n.wordCount)
+                    })
+                }
+            })
+        }
+    }
+
     fun buildNativeSnapshotMap(
         projects: List<ProjectItem>,
         tasks: List<TaskItem>,
@@ -82,65 +160,7 @@ object LocalBackupCodec {
         tasks: List<TaskItem>,
         notes: List<NoteItem>
     ): Pair<String, String> {
-        val dataObj = JSONObject().apply {
-            put("projects", JSONArray().apply {
-                projects.filter { !it.deleted }.forEach { p ->
-                    put(JSONObject().apply {
-                        put("docId", p.id)
-                        put("name", p.name)
-                        put("description", p.description ?: "")
-                        put("colorHex", p.colorHex)
-                        put("iconName", p.iconName)
-                        put("archived", p.archived)
-                    })
-                }
-            })
-            put("tasks", JSONArray().apply {
-                tasks.filter { !it.deleted }.forEach { t ->
-                    put(JSONObject().apply {
-                        put("docId", t.id)
-                        put("title", t.title)
-                        put("description", t.description)
-                        put("status", t.status)
-                        put("priority", t.priority)
-                        put("category", t.category)
-                        if (t.projectId != null) put("projectId", t.projectId)
-                        if (t.dueAtMillis != null) put("dueAtMillis", t.dueAtMillis)
-                        if (t.reminderAtMillis != null) put("reminderAtMillis", t.reminderAtMillis)
-                        if (t.completedAtMillis != null) put("completedAtMillis", t.completedAtMillis)
-                        put("recurrence", t.recurrence)
-                        put("tags", JSONArray(t.tags))
-                        put("subtasks", JSONArray().apply {
-                            t.subtasks.forEach { st ->
-                                put(JSONObject().apply {
-                                    put("id", st.id)
-                                    put("title", st.title)
-                                    put("done", st.done)
-                                })
-                            }
-                        })
-                        put("archived", t.archived)
-                    })
-                }
-            })
-            put("notes", JSONArray().apply {
-                notes.filter { !it.deleted }.forEach { n ->
-                    put(JSONObject().apply {
-                        put("docId", n.id)
-                        put("title", n.title)
-                        put("content", n.content)
-                        put("category", n.category)
-                        if (n.projectId != null) put("projectId", n.projectId)
-                        put("tags", JSONArray(n.tags))
-                        put("linkedTaskIds", JSONArray(n.linkedTaskIds))
-                        put("pinned", n.pinned)
-                        put("favorite", n.favorite)
-                        put("archived", n.archived)
-                        put("wordCount", n.wordCount)
-                    })
-                }
-            })
-        }
+        val dataObj = buildBackupDataJson(projects, tasks, notes)
 
         val canonical = dataObj.toString()
         val checksum = computeChecksum(canonical)
@@ -316,11 +336,13 @@ object LocalBackupCodec {
                 wordCount = (m["wordCount"] as? Number)?.toLong() ?: 0L
             )
         }
+        // S-04: hitung ulang checksum dari data snapshot dan bandingkan.
+        val actualChecksum = computeSnapshotChecksum(projects, tasks, notes)
         return BackupPreview(
             formatVersion = snapshot.formatVersion.toInt(),
             label = snapshot.label,
             checksum = snapshot.checksum,
-            checksumValid = snapshot.checksum.length >= 8,
+            checksumValid = snapshot.checksum.isNotBlank() && snapshot.checksum == actualChecksum,
             projects = projects,
             tasks = tasks,
             notes = notes
