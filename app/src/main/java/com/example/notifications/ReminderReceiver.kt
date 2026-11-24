@@ -12,17 +12,13 @@ import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import com.example.MainActivity
 import com.example.R
-import com.example.data.remote.OperationType
-import com.example.data.remote.handleFirestoreError
-import com.example.model.TaskStatus
+import com.example.data.local.UserPreferencesStore
+import com.example.data.remote.TaskFlowRepository
 import com.google.firebase.Firebase
 import com.google.firebase.auth.auth
-import com.google.firebase.firestore.FieldValue
-import com.google.firebase.firestore.FirebaseFirestore
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.tasks.await
 
 class ReminderReceiver : BroadcastReceiver() {
 
@@ -32,7 +28,7 @@ class ReminderReceiver : BroadcastReceiver() {
         val userId = intent.getStringExtra(ReminderScheduler.EXTRA_USER_ID).orEmpty()
         val title = intent.getStringExtra(ReminderScheduler.EXTRA_TASK_TITLE).orEmpty().ifBlank { "TaskFlow" }
         val message = intent.getStringExtra(ReminderScheduler.EXTRA_TASK_MESSAGE).orEmpty()
-        val notificationId = taskId.ifBlank { title }.hashCode()
+        val notificationId = ReminderScheduler.stableRequestCode(taskId.ifBlank { title })
         val notificationManager =
             context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
 
@@ -85,7 +81,7 @@ class ReminderReceiver : BroadcastReceiver() {
                 )
 
                 val notification = NotificationCompat.Builder(context, ReminderScheduler.CHANNEL_ID)
-                    .setSmallIcon(R.drawable.ic_launcher_foreground)
+                    .setSmallIcon(R.drawable.ic_stat_reminder)
                     .setContentTitle(title)
                     .setContentText(message.ifBlank { "Pengingat otomatis TaskFlow" })
                     .setPriority(NotificationCompat.PRIORITY_HIGH)
@@ -117,22 +113,16 @@ class ReminderReceiver : BroadcastReceiver() {
                     val pendingResult = goAsync()
                     CoroutineScope(Dispatchers.IO).launch {
                         try {
-                            val dbId = context.applicationContext.getString(R.string.firestore_database_id)
-                            val db = FirebaseFirestore.getInstance(dbId)
-                            val path = "users/$signedInUid/tasks/$taskId"
-                            try {
-                                db.collection("users").document(signedInUid)
-                                    .collection("tasks").document(taskId)
-                                    .update(
-                                        mapOf(
-                                            "status" to TaskStatus.COMPLETED.name,
-                                            "completedAtMillis" to System.currentTimeMillis(),
-                                            "updatedAt" to FieldValue.serverTimestamp()
-                                        )
-                                    ).await()
-                            } catch (e: Exception) {
-                                handleFirestoreError(e, OperationType.UPDATE, path)
-                            }
+                            // C-02: tidak lagi menulis langsung ke Firestore dari
+                            // receiver. Jalur data tunggal melalui repository:
+                            // revision + deviceId ikut ditulis dan tugas berulang
+                            // men-spawn kemunculan berikutnya secara idempoten.
+                            val appContext = context.applicationContext
+                            val repository = TaskFlowRepository(appContext)
+                            val deviceId = UserPreferencesStore(appContext).getOrCreateDeviceId()
+                            repository.completeTaskFromNotification(taskId, deviceId)
+                        } catch (_: Exception) {
+                            // Kegagalan sudah dicatat oleh penangan error repository.
                         } finally {
                             pendingResult.finish()
                         }

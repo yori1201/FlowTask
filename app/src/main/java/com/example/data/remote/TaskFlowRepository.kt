@@ -42,8 +42,19 @@ import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.tasks.await
-import java.util.Calendar
 import java.util.UUID
+
+/** Kenaikan revision cloud terdeteksi di dalam transaksi (C-01). */
+internal class RevisionConflictException(
+    val entityId: String,
+    val remoteRevision: Long,
+    val localRevision: Long,
+    val remoteTitle: String,
+    val remoteContent: String
+) : Exception("Cloud revision #$remoteRevision lebih baru dari lokal #$localRevision untuk $entityId")
+
+/** Hasil restore: jumlah item yang dipulihkan dan yang dilewati (C-05). */
+data class RestoreResult(val restoredCount: Int, val skippedCount: Int)
 
 class TaskFlowRepository(
     private val db: FirebaseFirestore,
@@ -110,6 +121,9 @@ class TaskFlowRepository(
                     detail = detail
                 )
             )
+            // C-08: pangkas riwayat log lebih dari 30 hari agar tabel
+            // sync_logs tidak tumbuh tanpa batas.
+            localDb.syncLogDao().deleteOlderThan(System.currentTimeMillis() - SYNC_LOG_RETENTION_MILLIS)
         } catch (_: Exception) {
             // Best-effort local audit log
         }
@@ -509,35 +523,6 @@ class TaskFlowRepository(
             val docRef = db.collection("users").document(uid).collection("tasks").document(existing.id)
             docPath = docRef.path
 
-            // Conflict Detection: inspect current cloud revision before overwriting
-            if (!forceOverwrite) {
-                val serverSnap = docRef.get().await()
-                val remoteRev = serverSnap.getLong("revision") ?: existing.revision
-                val remoteTitle = serverSnap.getString("title") ?: existing.title
-                val remoteDesc = serverSnap.getString("description") ?: existing.description
-                if (remoteRev > existing.revision && (remoteTitle != existing.title || remoteDesc != existing.description)) {
-                    localDb.syncConflictDao().upsertConflict(
-                        SyncConflictEntity(
-                            conflictId = "task_${existing.id}_$remoteRev",
-                            userId = uid,
-                            entityType = "TASK",
-                            entityId = existing.id,
-                            entityTitle = existing.title,
-                            localTitle = cleanTitle,
-                            localContent = cleanDesc,
-                            localRevision = existing.revision + 1L,
-                            cloudTitle = remoteTitle,
-                            cloudContent = remoteDesc,
-                            cloudRevision = remoteRev
-                        )
-                    )
-                    _syncMetadata.value = _syncMetadata.value.copy(state = SyncState.CONFLICT_DETECTED)
-                    recordLog(uid, "TASK", existing.id, "CONFLICT", "CONFLICT_DETECTED", "Revisi cloud #$remoteRev berbeda dari lokal #${existing.revision}")
-                    return Result.success(false)
-                }
-            }
-
-            val nextRevision = existing.revision + 1L
             val updates = mutableMapOf<String, Any>(
                 "title" to cleanTitle,
                 "description" to cleanDesc,
@@ -551,12 +536,47 @@ class TaskFlowRepository(
                 "recurrence" to recurrence.name,
                 "tags" to cleanTags,
                 "subtasks" to cleanSubtasks.map { it.toMap() },
-                "revision" to nextRevision,
                 "deviceId" to cleanDevice,
                 "updatedAt" to FieldValue.serverTimestamp()
             )
-            docRef.update(updates).await()
-            recordLog(uid, "TASK", existing.id, "UPDATE", "SYNCED", "$cleanTitle (rev #$nextRevision)")
+
+            // C-01: deteksi konflik dan penulisan revision kini atomik dalam satu
+            // transaksi — revision dibaca dan dinaikkan di sisi server, bukan
+            // dihitung klien dari snapshot yang bisa basi.
+            try {
+                db.runTransaction { tx ->
+                    val serverSnap = tx.get(docRef)
+                    val remoteRev = serverSnap.getLong("revision") ?: existing.revision
+                    if (!forceOverwrite && remoteRev > existing.revision) {
+                        val remoteTitle = serverSnap.getString("title") ?: existing.title
+                        val remoteDesc = serverSnap.getString("description") ?: existing.description
+                        if (remoteTitle != existing.title || remoteDesc != existing.description) {
+                            throw RevisionConflictException(existing.id, remoteRev, existing.revision, remoteTitle, remoteDesc)
+                        }
+                    }
+                    tx.update(docRef, updates + ("revision" to remoteRev + 1L))
+                }.await()
+            } catch (e: RevisionConflictException) {
+                localDb.syncConflictDao().upsertConflict(
+                    SyncConflictEntity(
+                        conflictId = "task_${existing.id}_${e.remoteRevision}",
+                        userId = uid,
+                        entityType = "TASK",
+                        entityId = existing.id,
+                        entityTitle = existing.title,
+                        localTitle = cleanTitle,
+                        localContent = cleanDesc,
+                        localRevision = existing.revision + 1L,
+                        cloudTitle = e.remoteTitle,
+                        cloudContent = e.remoteContent,
+                        cloudRevision = e.remoteRevision
+                    )
+                )
+                _syncMetadata.value = _syncMetadata.value.copy(state = SyncState.CONFLICT_DETECTED)
+                recordLog(uid, "TASK", existing.id, "CONFLICT", "CONFLICT_DETECTED", "Revisi cloud #${e.remoteRevision} berbeda dari lokal #${existing.revision}")
+                return Result.success(false)
+            }
+            recordLog(uid, "TASK", existing.id, "UPDATE", "SYNCED", "$cleanTitle (rev server +1)")
 
             if (reminderAtMillis != null && reminderAtMillis != existing.reminderAtMillis) {
                 logReminderEvent(
@@ -583,42 +603,136 @@ class TaskFlowRepository(
             val uid = requireUserId()
             val completing = task.taskStatus != TaskStatus.COMPLETED
             val nextStatus = if (completing) TaskStatus.COMPLETED else TaskStatus.TODO
-            val nextRev = task.revision + 1L
-            val docRef = db.collection("users").document(uid).collection("tasks").document(task.id)
+            val colRef = db.collection("users").document(uid).collection("tasks")
+            val docRef = colRef.document(task.id)
             docPath = docRef.path
+            val cleanDevice = deviceId.trim().take(80).ifEmpty { "android" }
+            var spawned: TaskItem? = null
 
-            val updates = mapOf<String, Any>(
-                "status" to nextStatus.name,
-                "completedAtMillis" to if (completing) System.currentTimeMillis() else FieldValue.delete(),
-                "revision" to nextRev,
-                "deviceId" to deviceId.ifBlank { "android" },
-                "updatedAt" to FieldValue.serverTimestamp()
-            )
-            docRef.update(updates).await()
-            recordLog(uid, "TASK", task.id, if (completing) "COMPLETE" else "REOPEN", "SYNCED", task.title)
-
-            // PRD FR-026: Recurring task spawns next occurrence while preserving completed history
-            var nextInstance: TaskItem? = null
-            if (completing && task.recurrenceRule != RecurrenceRule.NONE) {
-                val nextDue = computeNextOccurrenceMillis(task.dueAtMillis ?: System.currentTimeMillis(), task.recurrenceRule)
-                val nextReminder = task.reminderAtMillis?.let { computeNextOccurrenceMillis(it, task.recurrenceRule) }
-                val spawned = createTask(
-                    title = task.title,
-                    description = task.description,
-                    status = TaskStatus.TODO,
-                    priority = task.taskPriority,
-                    category = task.category,
-                    projectId = task.projectId,
-                    dueAtMillis = nextDue,
-                    reminderAtMillis = nextReminder,
-                    recurrence = task.recurrenceRule,
-                    tags = task.tags,
-                    subtasks = task.subtasks.map { it.copy(done = false) },
-                    deviceId = deviceId
+            // C-01 + C-06: penandaan selesai dan spawn kemunculan berikutnya
+            // terjadi dalam SATU transaksi. ID kemunculan deterministik membuat
+            // spawn idempoten bila dua perangkat menyelesaikan hampir bersamaan.
+            db.runTransaction { tx ->
+                val snap = tx.get(docRef)
+                val remoteRev = snap.getLong("revision") ?: task.revision
+                tx.update(
+                    docRef,
+                    mapOf(
+                        "status" to nextStatus.name,
+                        "completedAtMillis" to if (completing) System.currentTimeMillis() else FieldValue.delete(),
+                        "revision" to remoteRev + 1L,
+                        "deviceId" to cleanDevice,
+                        "updatedAt" to FieldValue.serverTimestamp()
+                    )
                 )
-                nextInstance = spawned.getOrNull()
-            }
-            Result.success(nextInstance)
+                // PRD FR-026: tugas berulang men-spawn kemunculan berikutnya
+                // sambil mempertahankan riwayat yang sudah selesai.
+                if (completing && task.recurrenceRule != RecurrenceRule.NONE && snap.exists()) {
+                    val parent = snap.toObject(TaskItem::class.java) ?: task
+                    val nextDue = computeNextOccurrenceMillis(
+                        parent.dueAtMillis ?: System.currentTimeMillis(),
+                        task.recurrenceRule
+                    )
+                    val nextReminder = parent.reminderAtMillis?.let {
+                        computeNextOccurrenceMillis(it, task.recurrenceRule)
+                    }
+                    val nextRef = colRef.document(buildOccurrenceDocId(task.id, nextDue))
+                    if (!tx.get(nextRef).exists()) {
+                        tx.set(nextRef, buildRecurrencePayload(uid, parent, nextDue, nextReminder, cleanDevice))
+                        nextReminder?.let {
+                            tx.set(
+                                db.collection("users").document(uid).collection("reminders")
+                                    .document(newReminderDocId()),
+                                buildReminderEventPayload(uid, task.id, parent.title, it)
+                            )
+                        }
+                        spawned = TaskItem(
+                            id = nextRef.id,
+                            userId = uid,
+                            title = parent.title,
+                            description = parent.description,
+                            status = TaskStatus.TODO.name,
+                            priority = parent.priority,
+                            category = parent.category,
+                            projectId = parent.projectId,
+                            dueAtMillis = nextDue,
+                            reminderAtMillis = nextReminder,
+                            recurrence = parent.recurrence,
+                            tags = parent.tags,
+                            subtasks = parent.subtasks.map { st -> st.copy(done = false) },
+                            deviceId = cleanDevice
+                        )
+                    }
+                }
+            }.await()
+            recordLog(uid, "TASK", task.id, if (completing) "COMPLETE" else "REOPEN", "SYNCED", task.title)
+            spawned?.let { recordLog(uid, "TASK", it.id, "SPAWN", "SYNCED", "Kemunculan berikutnya: ${it.title}") }
+            Result.success(spawned)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.UPDATE, docPath)
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * C-02: aksi "Selesai" dari notifikasi kini melewati jalur transaksi yang
+     * sama dengan UI — revision dinaikkan dari nilai server dan deviceId
+     * disertakan, sehingga perangkat lain mendeteksinya sebagai revisi baru.
+     * Idempoten: bila tugas sudah selesai, tidak ada tulisan ulang. Tugas
+     * berulang men-spawn kemunculan berikutnya dengan ID deterministik.
+     */
+    suspend fun completeTaskFromNotification(taskId: String, deviceId: String): Result<Unit> {
+        var docPath = "users/${auth.currentUser?.uid ?: "unauthenticated"}/tasks/$taskId"
+        return try {
+            val uid = requireUserId()
+            require(taskId.isNotBlank()) { "ID tugas tidak valid." }
+            val colRef = db.collection("users").document(uid).collection("tasks")
+            val docRef = colRef.document(taskId)
+            docPath = docRef.path
+            val cleanDevice = deviceId.trim().take(80).ifEmpty { "android" }
+
+            db.runTransaction { tx ->
+                val snap = tx.get(docRef)
+                if (!snap.exists()) return@runTransaction
+                val cloudStatus = snap.getString("status") ?: TaskStatus.TODO.name
+                if (cloudStatus == TaskStatus.COMPLETED.name) return@runTransaction
+                val remoteRev = snap.getLong("revision") ?: 1L
+                tx.update(
+                    docRef,
+                    mapOf(
+                        "status" to TaskStatus.COMPLETED.name,
+                        "completedAtMillis" to System.currentTimeMillis(),
+                        "revision" to remoteRev + 1L,
+                        "deviceId" to cleanDevice,
+                        "updatedAt" to FieldValue.serverTimestamp()
+                    )
+                )
+                val parent = snap.toObject(TaskItem::class.java) ?: return@runTransaction
+                if (parent.recurrenceRule != RecurrenceRule.NONE) {
+                    val nextDue = computeNextOccurrenceMillis(
+                        parent.dueAtMillis ?: System.currentTimeMillis(),
+                        parent.recurrenceRule
+                    )
+                    val nextReminder = parent.reminderAtMillis?.let {
+                        computeNextOccurrenceMillis(it, parent.recurrenceRule)
+                    }
+                    val nextRef = colRef.document(buildOccurrenceDocId(taskId, nextDue))
+                    if (!tx.get(nextRef).exists()) {
+                        tx.set(nextRef, buildRecurrencePayload(uid, parent, nextDue, nextReminder, cleanDevice))
+                        nextReminder?.let {
+                            tx.set(
+                                db.collection("users").document(uid).collection("reminders")
+                                    .document(newReminderDocId()),
+                                buildReminderEventPayload(uid, taskId, parent.title, it)
+                            )
+                        }
+                    }
+                }
+            }.await()
+            recordLog(uid, "TASK", taskId, "COMPLETE", "SYNCED", "Selesai dari notifikasi")
+            Result.success(Unit)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -639,7 +753,7 @@ class TaskFlowRepository(
             docRef.update(
                 mapOf(
                     "subtasks" to updated.map { it.toMap() },
-                    "revision" to (task.revision + 1L),
+                    "revision" to FieldValue.increment(1L),
                     "deviceId" to deviceId.ifBlank { "android" },
                     "updatedAt" to FieldValue.serverTimestamp()
                 )
@@ -662,7 +776,7 @@ class TaskFlowRepository(
             docRef.update(
                 mapOf(
                     "dueAtMillis" to (newDueMillis ?: FieldValue.delete()),
-                    "revision" to (task.revision + 1L),
+                    "revision" to FieldValue.increment(1L),
                     "deviceId" to deviceId.ifBlank { "android" },
                     "updatedAt" to FieldValue.serverTimestamp()
                 )
@@ -686,7 +800,7 @@ class TaskFlowRepository(
             docRef.update(
                 mapOf(
                     "archived" to archive,
-                    "revision" to (task.revision + 1L),
+                    "revision" to FieldValue.increment(1L),
                     "deviceId" to deviceId.ifBlank { "android" },
                     "updatedAt" to FieldValue.serverTimestamp()
                 )
@@ -710,7 +824,7 @@ class TaskFlowRepository(
             docRef.update(
                 mapOf(
                     "deleted" to true,
-                    "revision" to (task.revision + 1L),
+                    "revision" to FieldValue.increment(1L),
                     "deviceId" to deviceId.ifBlank { "android" },
                     "updatedAt" to FieldValue.serverTimestamp()
                 )
@@ -827,50 +941,56 @@ class TaskFlowRepository(
             val docRef = db.collection("users").document(uid).collection("notes").document(existing.id)
             docPath = docRef.path
 
-            if (!forceOverwrite) {
-                val snap = docRef.get().await()
-                val remoteRev = snap.getLong("revision") ?: existing.revision
-                val remoteTitle = snap.getString("title") ?: existing.title
-                val remoteContent = snap.getString("content") ?: existing.content
-                if (remoteRev > existing.revision && (remoteTitle != existing.title || remoteContent != existing.content)) {
-                    localDb.syncConflictDao().upsertConflict(
-                        SyncConflictEntity(
-                            conflictId = "note_${existing.id}_$remoteRev",
-                            userId = uid,
-                            entityType = "NOTE",
-                            entityId = existing.id,
-                            entityTitle = existing.title.ifBlank { "Catatan" },
-                            localTitle = cleanTitle,
-                            localContent = cleanContent,
-                            localRevision = existing.revision + 1L,
-                            cloudTitle = remoteTitle,
-                            cloudContent = remoteContent,
-                            cloudRevision = remoteRev
+            // C-01: pola transaksi atomik yang sama dengan updateTask.
+            try {
+                db.runTransaction { tx ->
+                    val snap = tx.get(docRef)
+                    val remoteRev = snap.getLong("revision") ?: existing.revision
+                    if (!forceOverwrite && remoteRev > existing.revision) {
+                        val remoteTitle = snap.getString("title") ?: existing.title
+                        val remoteContent = snap.getString("content") ?: existing.content
+                        if (remoteTitle != existing.title || remoteContent != existing.content) {
+                            throw RevisionConflictException(existing.id, remoteRev, existing.revision, remoteTitle, remoteContent)
+                        }
+                    }
+                    tx.update(
+                        docRef,
+                        mapOf(
+                            "title" to cleanTitle,
+                            "content" to cleanContent,
+                            "category" to cleanCat,
+                            "projectId" to (projectId?.takeIf { it.isNotBlank() } ?: FieldValue.delete()),
+                            "tags" to cleanTags,
+                            "linkedTaskIds" to cleanLinks,
+                            "wordCount" to words,
+                            "revision" to remoteRev + 1L,
+                            "deviceId" to cleanDevice,
+                            "updatedAt" to FieldValue.serverTimestamp()
                         )
                     )
-                    _syncMetadata.value = _syncMetadata.value.copy(state = SyncState.CONFLICT_DETECTED)
-                    recordLog(uid, "NOTE", existing.id, "CONFLICT", "CONFLICT_DETECTED", "Revisi cloud #$remoteRev berbeda")
-                    return Result.success(false)
-                }
-            }
-
-            val nextRev = existing.revision + 1L
-            docRef.update(
-                mapOf(
-                    "title" to cleanTitle,
-                    "content" to cleanContent,
-                    "category" to cleanCat,
-                    "projectId" to (projectId?.takeIf { it.isNotBlank() } ?: FieldValue.delete()),
-                    "tags" to cleanTags,
-                    "linkedTaskIds" to cleanLinks,
-                    "wordCount" to words,
-                    "revision" to nextRev,
-                    "deviceId" to cleanDevice,
-                    "updatedAt" to FieldValue.serverTimestamp()
+                }.await()
+            } catch (e: RevisionConflictException) {
+                localDb.syncConflictDao().upsertConflict(
+                    SyncConflictEntity(
+                        conflictId = "note_${existing.id}_${e.remoteRevision}",
+                        userId = uid,
+                        entityType = "NOTE",
+                        entityId = existing.id,
+                        entityTitle = existing.title.ifBlank { "Catatan" },
+                        localTitle = cleanTitle,
+                        localContent = cleanContent,
+                        localRevision = existing.revision + 1L,
+                        cloudTitle = e.remoteTitle,
+                        cloudContent = e.remoteContent,
+                        cloudRevision = e.remoteRevision
+                    )
                 )
-            ).await()
+                _syncMetadata.value = _syncMetadata.value.copy(state = SyncState.CONFLICT_DETECTED)
+                recordLog(uid, "NOTE", existing.id, "CONFLICT", "CONFLICT_DETECTED", "Revisi cloud #${e.remoteRevision} berbeda")
+                return Result.success(false)
+            }
             clearNoteDraftLocally(uid, existing.id)
-            recordLog(uid, "NOTE", existing.id, "UPDATE", "SYNCED", "${cleanTitle.ifBlank { "Catatan" }} (rev #$nextRev)")
+            recordLog(uid, "NOTE", existing.id, "UPDATE", "SYNCED", "${cleanTitle.ifBlank { "Catatan" }} (rev server +1)")
             Result.success(true)
         } catch (e: CancellationException) {
             throw e
@@ -899,7 +1019,7 @@ class TaskFlowRepository(
                     "favorite" to favorite,
                     "archived" to archived,
                     "deleted" to deleted,
-                    "revision" to (note.revision + 1L),
+                    "revision" to FieldValue.increment(1L),
                     "deviceId" to deviceId.ifBlank { "android" },
                     "updatedAt" to FieldValue.serverTimestamp()
                 )
@@ -992,7 +1112,7 @@ class TaskFlowRepository(
                     "description" to (cleanDesc ?: FieldValue.delete()),
                     "colorHex" to colorHex.take(9),
                     "archived" to archived,
-                    "revision" to (existing.revision + 1L),
+                    "revision" to FieldValue.increment(1L),
                     "updatedAt" to FieldValue.serverTimestamp()
                 )
             ).await()
@@ -1026,7 +1146,7 @@ class TaskFlowRepository(
                     userDoc.collection("tasks").document(t.id),
                     mapOf(
                         "projectId" to FieldValue.delete(),
-                        "revision" to (t.revision + 1L),
+                        "revision" to FieldValue.increment(1L),
                         "deviceId" to deviceId.ifBlank { "android" },
                         "updatedAt" to FieldValue.serverTimestamp()
                     )
@@ -1037,7 +1157,7 @@ class TaskFlowRepository(
                     userDoc.collection("notes").document(n.id),
                     mapOf(
                         "projectId" to FieldValue.delete(),
-                        "revision" to (n.revision + 1L),
+                        "revision" to FieldValue.increment(1L),
                         "deviceId" to deviceId.ifBlank { "android" },
                         "updatedAt" to FieldValue.serverTimestamp()
                     )
@@ -1049,7 +1169,7 @@ class TaskFlowRepository(
                 projRef,
                 mapOf(
                     "deleted" to true,
-                    "revision" to (project.revision + 1L),
+                    "revision" to FieldValue.increment(1L),
                     "updatedAt" to FieldValue.serverTimestamp()
                 )
             )
@@ -1157,32 +1277,42 @@ class TaskFlowRepository(
         var docPath = "users/${conflict.userId}/${conflict.entityType.lowercase()}s/${conflict.entityId}"
         return try {
             val uid = requireUserId()
-            val nextRev = maxOf(conflict.localRevision, conflict.cloudRevision) + 1L
+            val cleanDevice = deviceId.ifBlank { "android" }
             if (conflict.entityType == "TASK") {
                 val ref = db.collection("users").document(uid).collection("tasks").document(conflict.entityId)
                 docPath = ref.path
-                ref.update(
-                    mapOf(
-                        "title" to chosenTitle.trim().take(160).ifEmpty { "Tugas" },
-                        "description" to chosenContent.trim().take(4000),
-                        "revision" to nextRev,
-                        "deviceId" to deviceId.ifBlank { "android" },
-                        "updatedAt" to FieldValue.serverTimestamp()
+                // C-01: revision resolusi kini dihitung dari nilai server terbaru
+                // di dalam transaksi agar tetap monoton bila cloud bergerak lagi.
+                db.runTransaction { tx ->
+                    val currentRev = tx.get(ref).getLong("revision") ?: 0L
+                    tx.update(
+                        ref,
+                        mapOf(
+                            "title" to chosenTitle.trim().take(160).ifEmpty { "Tugas" },
+                            "description" to chosenContent.trim().take(4000),
+                            "revision" to maxOf(currentRev, conflict.localRevision, conflict.cloudRevision) + 1L,
+                            "deviceId" to cleanDevice,
+                            "updatedAt" to FieldValue.serverTimestamp()
+                        )
                     )
-                ).await()
+                }.await()
             } else {
                 val ref = db.collection("users").document(uid).collection("notes").document(conflict.entityId)
                 docPath = ref.path
-                ref.update(
-                    mapOf(
-                        "title" to chosenTitle.trim().take(160),
-                        "content" to chosenContent.take(50000),
-                        "wordCount" to countWords("$chosenTitle $chosenContent"),
-                        "revision" to nextRev,
-                        "deviceId" to deviceId.ifBlank { "android" },
-                        "updatedAt" to FieldValue.serverTimestamp()
+                db.runTransaction { tx ->
+                    val currentRev = tx.get(ref).getLong("revision") ?: 0L
+                    tx.update(
+                        ref,
+                        mapOf(
+                            "title" to chosenTitle.trim().take(160),
+                            "content" to chosenContent.take(50000),
+                            "wordCount" to countWords("$chosenTitle $chosenContent"),
+                            "revision" to maxOf(currentRev, conflict.localRevision, conflict.cloudRevision) + 1L,
+                            "deviceId" to cleanDevice,
+                            "updatedAt" to FieldValue.serverTimestamp()
+                        )
                     )
-                ).await()
+                }.await()
             }
             localDb.syncConflictDao().markResolved(conflict.conflictId)
             recordLog(uid, conflict.entityType, conflict.entityId, "CONFLICT_RESOLVED", "SYNCED", resolutionLabel)
@@ -1264,66 +1394,54 @@ class TaskFlowRepository(
         }
     }
 
+    /**
+     * C-05: restore dengan WriteBatch ber-chunk (bukan N+1 round-trip),
+     * dedup berbasis snapshot cloud SEGAR (bukan StateFlow yang bisa basi),
+     * dan pengawetan flag archived/pinned/favorite/status. Dokumen cloud yang
+     * masih hidup tidak pernah ditimpa; dokumen ter-soft-delete dihidupkan
+     * kembali dengan revision monoton (aturan Firestore menjaga createdAt).
+     */
     suspend fun restoreFromPreview(
         preview: BackupPreview,
-        existingProjectIds: Set<String>,
-        existingTaskIds: Set<String>,
-        existingNoteIds: Set<String>,
         deviceId: String
-    ): Result<Int> {
+    ): Result<RestoreResult> {
         return try {
             val uid = requireUserId()
-            var restoredCount = 0
+            val userDoc = db.collection("users").document(uid)
 
-            preview.projects.forEach { p ->
-                if (p.id.isBlank() || p.id !in existingProjectIds) {
-                    val res = createProject(
-                        name = p.name,
-                        description = p.description,
-                        colorHex = p.colorHex,
-                        iconName = p.iconName,
-                        explicitDocId = p.id.takeIf { it.isNotBlank() }
+            suspend fun fetchExisting(collection: String): Map<String, RestorePlanner.ExistingDoc> =
+                userDoc.collection(collection).get().await().documents.associate { doc ->
+                    doc.id to RestorePlanner.ExistingDoc(
+                        revision = doc.getLong("revision") ?: 1L,
+                        deleted = doc.getBoolean("deleted") ?: false,
+                        createdAt = doc.get("createdAt")
                     )
-                    if (res.isSuccess) restoredCount++
                 }
-            }
-            preview.tasks.forEach { t ->
-                if (t.id.isBlank() || t.id !in existingTaskIds) {
-                    val res = createTask(
-                        title = t.title,
-                        description = t.description,
-                        status = t.taskStatus,
-                        priority = t.taskPriority,
-                        category = t.category,
-                        projectId = t.projectId,
-                        dueAtMillis = t.dueAtMillis,
-                        reminderAtMillis = t.reminderAtMillis,
-                        recurrence = t.recurrenceRule,
-                        tags = t.tags,
-                        subtasks = t.subtasks,
-                        deviceId = deviceId,
-                        explicitDocId = t.id.takeIf { it.isNotBlank() }
-                    )
-                    if (res.isSuccess) restoredCount++
+
+            val plan = RestorePlanner.buildRestorePlan(
+                uid = uid,
+                deviceId = deviceId,
+                preview = preview,
+                existingProjects = fetchExisting("projects"),
+                existingTasks = fetchExisting("tasks"),
+                existingNotes = fetchExisting("notes")
+            )
+
+            var committed = 0
+            plan.writes.chunked(BATCH_WRITE_LIMIT).forEach { chunk ->
+                val batch = db.batch()
+                chunk.forEach { write ->
+                    batch.set(userDoc.collection(write.collection).document(write.docId), write.payload)
                 }
+                batch.commit().await()
+                committed += chunk.size
             }
-            preview.notes.forEach { n ->
-                if (n.id.isBlank() || n.id !in existingNoteIds) {
-                    val res = createNote(
-                        title = n.title,
-                        content = n.content,
-                        category = n.category,
-                        projectId = n.projectId,
-                        tags = n.tags,
-                        linkedTaskIds = n.linkedTaskIds,
-                        deviceId = deviceId,
-                        explicitDocId = n.id.takeIf { it.isNotBlank() }
-                    )
-                    if (res.isSuccess) restoredCount++
-                }
-            }
-            recordLog(uid, "BACKUP", "restore", "RESTORE", "SYNCED", "Memulihkan $restoredCount item tanpa duplikasi")
-            Result.success(restoredCount)
+
+            recordLog(
+                uid, "BACKUP", "restore", "RESTORE", "SYNCED",
+                "Memulihkan $committed item, ${plan.skippedCount} dilewati (sudah ada di cloud)"
+            )
+            Result.success(RestoreResult(plan.restoredCount, plan.skippedCount))
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -1332,23 +1450,77 @@ class TaskFlowRepository(
         }
     }
 
+    private fun newReminderDocId(): String =
+        "rem_${UUID.randomUUID().toString().replace("-", "").take(16)}"
+
+    /** ID deterministik untuk kemunculan berikutnya agar spawn idempoten (C-06). */
+    private fun buildOccurrenceDocId(parentId: String, dueMillis: Long): String =
+        "${parentId.take(64)}_occ_$dueMillis"
+
+    private fun buildRecurrencePayload(
+        uid: String,
+        parent: TaskItem,
+        nextDueMillis: Long,
+        nextReminderMillis: Long?,
+        deviceId: String
+    ): Map<String, Any> {
+        val payload = mutableMapOf<String, Any?>(
+            "userId" to uid,
+            "title" to parent.title.trim().take(160).ifEmpty { "Tugas" },
+            "description" to parent.description.take(4000),
+            "status" to TaskStatus.TODO.name,
+            "priority" to parent.priority,
+            "category" to parent.category.trim().take(40).ifEmpty { "Personal" },
+            "projectId" to parent.projectId?.takeIf { it.isNotBlank() },
+            "dueAtMillis" to nextDueMillis,
+            "reminderAtMillis" to nextReminderMillis,
+            "recurrence" to parent.recurrence,
+            "tags" to parent.tags.map { it.trim().take(32) }.filter { it.isNotEmpty() }.distinct().take(10),
+            "subtasks" to parent.subtasks.filter { it.title.isNotBlank() }.take(20).map { it.copy(done = false).toMap() },
+            "archived" to false,
+            "deleted" to false,
+            "revision" to 1L,
+            "deviceId" to deviceId,
+            "createdAt" to FieldValue.serverTimestamp(),
+            "updatedAt" to FieldValue.serverTimestamp()
+        ).filterValues { it != null }
+        @Suppress("UNCHECKED_CAST")
+        return payload as Map<String, Any>
+    }
+
+    private fun buildReminderEventPayload(
+        uid: String,
+        taskId: String?,
+        title: String,
+        scheduledAtMillis: Long
+    ): Map<String, Any> {
+        val cleanTitle = title.trim().take(160)
+        val payload = mapOf<String, Any?>(
+            "userId" to uid,
+            "taskId" to taskId?.takeIf { it.isNotBlank() },
+            "title" to cleanTitle.ifEmpty { "Pengingat" },
+            "message" to "Pengingat dijadwalkan untuk \"$cleanTitle\"".take(500),
+            "reminderType" to ReminderType.TASK_REMINDER.name,
+            "scheduledAtMillis" to scheduledAtMillis.coerceAtLeast(0L),
+            "dismissed" to false,
+            "createdAt" to FieldValue.serverTimestamp(),
+            "updatedAt" to FieldValue.serverTimestamp()
+        ).filterValues { it != null }
+        @Suppress("UNCHECKED_CAST")
+        return payload as Map<String, Any>
+    }
+
     companion object {
+        private const val BATCH_WRITE_LIMIT = 400
+        private const val SYNC_LOG_RETENTION_MILLIS = 30L * 24 * 60 * 60 * 1000
+
         fun countWords(text: String): Long {
             val trimmed = text.trim()
             if (trimmed.isEmpty()) return 0L
             return trimmed.split(Regex("\\s+")).size.toLong().coerceAtMost(50000L)
         }
 
-        fun computeNextOccurrenceMillis(baseMillis: Long, rule: RecurrenceRule): Long {
-            val cal = Calendar.getInstance().apply { timeInMillis = baseMillis }
-            when (rule) {
-                RecurrenceRule.DAILY -> cal.add(Calendar.DAY_OF_YEAR, 1)
-                RecurrenceRule.WEEKLY -> cal.add(Calendar.WEEK_OF_YEAR, 1)
-                RecurrenceRule.MONTHLY -> cal.add(Calendar.MONTH, 1)
-                RecurrenceRule.YEARLY -> cal.add(Calendar.YEAR, 1)
-                RecurrenceRule.NONE -> Unit
-            }
-            return cal.timeInMillis
-        }
+        fun computeNextOccurrenceMillis(baseMillis: Long, rule: RecurrenceRule): Long =
+            RecurrenceSchedule.nextOccurrenceMillis(baseMillis, rule)
     }
 }
