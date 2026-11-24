@@ -43,6 +43,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -58,6 +59,9 @@ import com.example.model.SyncMetadata
 import com.example.model.UiState
 import com.example.ui.components.DateFormatters
 import com.example.ui.components.SyncStatusBadge
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -84,20 +88,27 @@ fun SyncBackupScreen(
     onBack: () -> Unit
 ) {
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
 
+    // C-04: enkode/dekode JSON dan I/O file dipindah dari main thread agar
+    // ekspor ribuan tugas tidak menyebabkan jank/ANR.
     val exportLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.CreateDocument("application/json")
     ) { uri ->
         if (uri != null) {
-            try {
-                val stamp = SimpleDateFormat("yyyyMMdd_HHmm", Locale.US).format(Date())
-                val json = onBuildExportJson("Export Lokal $stamp")
-                context.contentResolver.openOutputStream(uri)?.use { stream ->
-                    stream.write(json.toByteArray(Charsets.UTF_8))
+            scope.launch(Dispatchers.Default) {
+                try {
+                    val stamp = SimpleDateFormat("yyyyMMdd_HHmm", Locale.US).format(Date())
+                    val json = onBuildExportJson("Export Lokal $stamp")
+                    withContext(Dispatchers.IO) {
+                        context.contentResolver.openOutputStream(uri)?.use { stream ->
+                            stream.write(json.toByteArray(Charsets.UTF_8))
+                        } ?: throw IllegalStateException("Tidak bisa membuka file tujuan")
+                    }
+                    onShowMessage("File backup JSON berhasil diekspor.")
+                } catch (e: Exception) {
+                    onShowMessage("Gagal mengekspor file backup: ${e.localizedMessage ?: "error"}")
                 }
-                onShowMessage("File backup JSON berhasil diekspor.")
-            } catch (e: Exception) {
-                onShowMessage("Gagal mengekspor file backup: ${e.localizedMessage ?: "error"}")
             }
         }
     }
@@ -106,15 +117,19 @@ fun SyncBackupScreen(
         contract = ActivityResultContracts.OpenDocument()
     ) { uri ->
         if (uri != null) {
-            try {
-                val content = context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
-                if (content != null) {
-                    onInspectImportJson(content)
-                } else {
-                    onShowMessage("File backup kosong.")
+            scope.launch(Dispatchers.Default) {
+                try {
+                    val content = withContext(Dispatchers.IO) {
+                        context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
+                    }
+                    if (content != null) {
+                        onInspectImportJson(content)
+                    } else {
+                        onShowMessage("File backup kosong.")
+                    }
+                } catch (e: Exception) {
+                    onShowMessage("Gagal membaca file backup: ${e.localizedMessage ?: "error"}")
                 }
-            } catch (e: Exception) {
-                onShowMessage("Gagal membaca file backup: ${e.localizedMessage ?: "error"}")
             }
         }
     }

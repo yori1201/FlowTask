@@ -64,6 +64,9 @@ class TaskFlowViewModel(
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(STOP_TIMEOUT), UserSettings())
 
     val userProfile: StateFlow<UserProfile?> = repository.observeUserProfile(currentUserId)
+        .restartOnTransientError { attempt, error ->
+            Log.w(TAG, "Profile stream retry #$attempt: ${error.localizedMessage}")
+        }
         .catch { error ->
             unwrapFirestoreOrRethrow(error, "profile")
             emit(null)
@@ -123,8 +126,18 @@ class TaskFlowViewModel(
         }
     }
 
+    /**
+     * C-03: dulu `.catch { emit(UiState.Error) }` bersifat terminal — satu
+     * exception menghentikan stream selamanya. Kini error transien (jaringan)
+     * di-resubscribe dengan backoff eksponensial; hanya error fatal yang
+     * berakhir menjadi UiState.Error. Data terakhir tetap tampil selama
+     * pemulihan karena StateFlow menyimpan nilai sukses sebelumnya.
+     */
     private fun <T> Flow<T>.toUiState(fallbackMessage: String): Flow<UiState<T>> =
         map<T, UiState<T>> { UiState.Success(it) }
+            .restartOnTransientError { attempt, error ->
+                Log.w(TAG, "Stream retry #$attempt: ${error.localizedMessage}")
+            }
             .catch { error ->
                 val root = unwrapFirestoreOrRethrow(error, fallbackMessage)
                 emit(UiState.Error(root.localizedMessage ?: fallbackMessage))
@@ -589,15 +602,15 @@ class TaskFlowViewModel(
 
     fun confirmRestorePreview() {
         val preview = _pendingRestorePreview.value ?: return
-        val existingProj = (projectsState.value as? UiState.Success)?.data.orEmpty().map { it.id }.toSet()
-        val existingTasks = (tasksState.value as? UiState.Success)?.data.orEmpty().map { it.id }.toSet()
-        val existingNotes = (notesState.value as? UiState.Success)?.data.orEmpty().map { it.id }.toSet()
         viewModelScope.launch {
             _isBusy.value = true
-            repository.restoreFromPreview(preview, existingProj, existingTasks, existingNotes, deviceId)
-                .onSuccess { count ->
+            repository.restoreFromPreview(preview, deviceId)
+                .onSuccess { result ->
                     _pendingRestorePreview.value = null
-                    showMessage("Pemulihan selesai: $count item dipulihkan tanpa duplikasi.")
+                    showMessage(
+                        "Pemulihan selesai: ${result.restoredCount} item dipulihkan" +
+                            ", ${result.skippedCount} dilewati karena sudah ada di cloud."
+                    )
                 }
                 .onFailure {
                     showMessage("Pemulihan backup gagal. Data aktif tidak diubah.")
