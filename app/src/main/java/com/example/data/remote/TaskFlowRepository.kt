@@ -3,10 +3,12 @@ package com.example.data.remote
 import android.content.Context
 import com.example.R
 import com.example.backup.LocalBackupCodec
+import com.example.data.local.LocalTaskFlowStore
 import com.example.data.local.NoteDraftEntity
 import com.example.data.local.SyncConflictEntity
 import com.example.data.local.SyncLogEntity
 import com.example.data.local.TaskFlowLocalDatabase
+import com.example.data.local.TaskFlowLocalMode
 import com.example.model.BackupPreview
 import com.example.model.BackupSnapshot
 import com.example.model.NoteItem
@@ -22,6 +24,7 @@ import com.example.model.TaskPriority
 import com.example.model.TaskStatus
 import com.example.model.UserProfile
 import com.google.firebase.Firebase
+import com.google.firebase.Timestamp
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.auth.auth
 import com.google.firebase.firestore.DocumentSnapshot
@@ -59,7 +62,8 @@ data class RestoreResult(val restoredCount: Int, val skippedCount: Int)
 class TaskFlowRepository(
     private val db: FirebaseFirestore,
     private val localDb: TaskFlowLocalDatabase,
-    private val auth: FirebaseAuth = Firebase.auth
+    private val auth: FirebaseAuth = Firebase.auth,
+    private val isLocalMode: Boolean = false
 ) {
     constructor(context: Context) : this(
         db = FirebaseFirestore.getInstance(
@@ -73,11 +77,18 @@ class TaskFlowRepository(
                 // Settings already initialized on this singleton instance
             }
         },
-        localDb = TaskFlowLocalDatabase.getInstance(context.applicationContext)
+        localDb = TaskFlowLocalDatabase.getInstance(context.applicationContext),
+        isLocalMode = TaskFlowLocalMode.isEnabled(context.applicationContext)
     )
 
     private val _syncMetadata = MutableStateFlow(SyncMetadata())
     val syncMetadata: StateFlow<SyncMetadata> = _syncMetadata.asStateFlow()
+
+    init {
+        if (isLocalMode) {
+            _syncMetadata.value = SyncMetadata(state = SyncState.LOCAL_ONLY)
+        }
+    }
 
     private fun requireUserId(): String {
         val uid = auth.currentUser?.uid
@@ -171,6 +182,7 @@ class TaskFlowRepository(
 
     // --- USER PROFILE ---
     suspend fun ensureUserProfile(): Result<Unit> {
+        if (isLocalMode) return localEnsureUserProfile()
         val user = auth.currentUser ?: return Result.failure(IllegalStateException("Unauthenticated"))
         val uid = user.uid
         val path = "users/$uid"
@@ -207,7 +219,9 @@ class TaskFlowRepository(
         }
     }
 
-    fun observeUserProfile(userId: String): Flow<UserProfile?> = flow {
+    fun observeUserProfile(userId: String): Flow<UserProfile?> {
+        if (isLocalMode) return localStore.observeProfile(userId)
+        return flow {
         val path = "users/$userId"
         emitAll(
             db.collection("users").document(userId)
@@ -230,9 +244,12 @@ class TaskFlowRepository(
                 }
         )
     }
+    }
 
     // --- REALTIME COLLECTION STREAMS ---
-    fun observeTasks(userId: String): Flow<List<TaskItem>> = flow {
+    fun observeTasks(userId: String): Flow<List<TaskItem>> {
+        if (isLocalMode) return localStore.observeTasks(userId)
+        return flow {
         val path = "users/$userId/tasks"
         emitAll(
             db.collection("users").document(userId).collection("tasks")
@@ -264,8 +281,11 @@ class TaskFlowRepository(
                 }
         )
     }
+    }
 
-    fun observeNotes(userId: String): Flow<List<NoteItem>> = flow {
+    fun observeNotes(userId: String): Flow<List<NoteItem>> {
+        if (isLocalMode) return localStore.observeNotes(userId)
+        return flow {
         val path = "users/$userId/notes"
         emitAll(
             db.collection("users").document(userId).collection("notes")
@@ -289,8 +309,11 @@ class TaskFlowRepository(
                 }
         )
     }
+    }
 
-    fun observeProjects(userId: String): Flow<List<ProjectItem>> = flow {
+    fun observeProjects(userId: String): Flow<List<ProjectItem>> {
+        if (isLocalMode) return localStore.observeProjects(userId)
+        return flow {
         val path = "users/$userId/projects"
         emitAll(
             db.collection("users").document(userId).collection("projects")
@@ -314,8 +337,11 @@ class TaskFlowRepository(
                 }
         )
     }
+    }
 
-    fun observeReminders(userId: String): Flow<List<ReminderEvent>> = flow {
+    fun observeReminders(userId: String): Flow<List<ReminderEvent>> {
+        if (isLocalMode) return localStore.observeReminders(userId)
+        return flow {
         val path = "users/$userId/reminders"
         emitAll(
             db.collection("users").document(userId).collection("reminders")
@@ -339,8 +365,11 @@ class TaskFlowRepository(
                 }
         )
     }
+    }
 
-    fun observeBackups(userId: String): Flow<List<BackupSnapshot>> = flow {
+    fun observeBackups(userId: String): Flow<List<BackupSnapshot>> {
+        if (isLocalMode) return localStore.observeBackups(userId)
+        return flow {
         val path = "users/$userId/backups"
         emitAll(
             db.collection("users").document(userId).collection("backups")
@@ -364,9 +393,11 @@ class TaskFlowRepository(
                 }
         )
     }
+    }
 
     // --- MANUAL SYNC CHECK ---
     suspend fun triggerManualSync(userId: String): Result<Unit> {
+        if (isLocalMode) return localTriggerManualSync(userId)
         val path = "users/$userId/tasks"
         _syncMetadata.value = _syncMetadata.value.copy(state = SyncState.SYNCING)
         return try {
@@ -409,6 +440,10 @@ class TaskFlowRepository(
         deviceId: String,
         explicitDocId: String? = null
     ): Result<TaskItem> {
+        if (isLocalMode) return localCreateTask(
+            title, description, status, priority, category, projectId,
+            dueAtMillis, reminderAtMillis, recurrence, tags, subtasks, deviceId, explicitDocId
+        )
         var docPath = "users/${auth.currentUser?.uid ?: "unauthenticated"}/tasks"
         return try {
             val uid = requireUserId()
@@ -508,6 +543,10 @@ class TaskFlowRepository(
         deviceId: String,
         forceOverwrite: Boolean = false
     ): Result<Boolean> {
+        if (isLocalMode) return localUpdateTask(
+            existing, title, description, status, priority, category, projectId,
+            dueAtMillis, reminderAtMillis, recurrence, tags, subtasks, deviceId
+        )
         var docPath = "users/${auth.currentUser?.uid ?: "unauthenticated"}/tasks/${existing.id}"
         return try {
             val uid = requireUserId()
@@ -598,6 +637,7 @@ class TaskFlowRepository(
     }
 
     suspend fun toggleTaskCompletion(task: TaskItem, deviceId: String): Result<TaskItem?> {
+        if (isLocalMode) return localToggleTaskCompletion(task, deviceId)
         var docPath = "users/${auth.currentUser?.uid ?: "unauthenticated"}/tasks/${task.id}"
         return try {
             val uid = requireUserId()
@@ -684,6 +724,7 @@ class TaskFlowRepository(
      * berulang men-spawn kemunculan berikutnya dengan ID deterministik.
      */
     suspend fun completeTaskFromNotification(taskId: String, deviceId: String): Result<Unit> {
+        if (isLocalMode) return localCompleteTaskFromNotification(taskId, deviceId)
         var docPath = "users/${auth.currentUser?.uid ?: "unauthenticated"}/tasks/$taskId"
         return try {
             val uid = requireUserId()
@@ -742,6 +783,7 @@ class TaskFlowRepository(
     }
 
     suspend fun toggleSubtask(task: TaskItem, subtaskId: String, deviceId: String): Result<Unit> {
+        if (isLocalMode) return localToggleSubtask(task, subtaskId, deviceId)
         var docPath = "users/${auth.currentUser?.uid ?: "unauthenticated"}/tasks/${task.id}"
         return try {
             val uid = requireUserId()
@@ -768,6 +810,7 @@ class TaskFlowRepository(
     }
 
     suspend fun rescheduleTask(task: TaskItem, newDueMillis: Long?, deviceId: String): Result<Unit> {
+        if (isLocalMode) return localRescheduleTask(task, newDueMillis, deviceId)
         var docPath = "users/${auth.currentUser?.uid ?: "unauthenticated"}/tasks/${task.id}"
         return try {
             val uid = requireUserId()
@@ -792,6 +835,7 @@ class TaskFlowRepository(
     }
 
     suspend fun archiveTask(task: TaskItem, archive: Boolean, deviceId: String): Result<Unit> {
+        if (isLocalMode) return localArchiveTask(task, archive, deviceId)
         var docPath = "users/${auth.currentUser?.uid ?: "unauthenticated"}/tasks/${task.id}"
         return try {
             val uid = requireUserId()
@@ -816,6 +860,7 @@ class TaskFlowRepository(
     }
 
     suspend fun softDeleteTask(task: TaskItem, deviceId: String): Result<Unit> {
+        if (isLocalMode) return localSoftDeleteTask(task, deviceId)
         var docPath = "users/${auth.currentUser?.uid ?: "unauthenticated"}/tasks/${task.id}"
         return try {
             val uid = requireUserId()
@@ -850,6 +895,9 @@ class TaskFlowRepository(
         deviceId: String,
         explicitDocId: String? = null
     ): Result<NoteItem> {
+        if (isLocalMode) return localCreateNote(
+            title, content, category, projectId, tags, linkedTaskIds, deviceId, explicitDocId
+        )
         var docPath = "users/${auth.currentUser?.uid ?: "unauthenticated"}/notes"
         return try {
             val uid = requireUserId()
@@ -926,6 +974,9 @@ class TaskFlowRepository(
         deviceId: String,
         forceOverwrite: Boolean = false
     ): Result<Boolean> {
+        if (isLocalMode) return localUpdateNote(
+            existing, title, content, category, projectId, tags, linkedTaskIds, deviceId
+        )
         var docPath = "users/${auth.currentUser?.uid ?: "unauthenticated"}/notes/${existing.id}"
         return try {
             val uid = requireUserId()
@@ -1008,6 +1059,7 @@ class TaskFlowRepository(
         deleted: Boolean = note.deleted,
         deviceId: String
     ): Result<Unit> {
+        if (isLocalMode) return localUpdateNoteFlags(note, pinned, favorite, archived, deleted, deviceId)
         var docPath = "users/${auth.currentUser?.uid ?: "unauthenticated"}/notes/${note.id}"
         return try {
             val uid = requireUserId()
@@ -1041,6 +1093,7 @@ class TaskFlowRepository(
         iconName: String = "folder",
         explicitDocId: String? = null
     ): Result<ProjectItem> {
+        if (isLocalMode) return localCreateProject(name, description, colorHex, iconName, explicitDocId)
         var docPath = "users/${auth.currentUser?.uid ?: "unauthenticated"}/projects"
         return try {
             val uid = requireUserId()
@@ -1098,6 +1151,7 @@ class TaskFlowRepository(
         colorHex: String,
         archived: Boolean = existing.archived
     ): Result<Unit> {
+        if (isLocalMode) return localUpdateProject(existing, name, description, colorHex, archived)
         var docPath = "users/${auth.currentUser?.uid ?: "unauthenticated"}/projects/${existing.id}"
         return try {
             val uid = requireUserId()
@@ -1135,6 +1189,7 @@ class TaskFlowRepository(
         linkedNotes: List<NoteItem>,
         deviceId: String
     ): Result<Unit> {
+        if (isLocalMode) return localSafeDeleteProject(project, linkedTasks, linkedNotes, deviceId)
         var docPath = "users/${auth.currentUser?.uid ?: "unauthenticated"}/projects/${project.id}"
         return try {
             val uid = requireUserId()
@@ -1193,6 +1248,7 @@ class TaskFlowRepository(
         type: ReminderType,
         scheduledAtMillis: Long
     ): Result<Unit> {
+        if (isLocalMode) return localLogReminderEvent(uid, taskId, title, message, type, scheduledAtMillis)
         var docPath = "users/$uid/reminders"
         return try {
             val activeUid = requireUserId()
@@ -1222,6 +1278,7 @@ class TaskFlowRepository(
     }
 
     suspend fun snoozeReminderEvent(event: ReminderEvent, delayMinutes: Int = 15): Result<Long> {
+        if (isLocalMode) return localSnoozeReminderEvent(event, delayMinutes)
         var docPath = "users/${auth.currentUser?.uid ?: "unauthenticated"}/reminders/${event.id}"
         return try {
             val uid = requireUserId()
@@ -1246,6 +1303,7 @@ class TaskFlowRepository(
     }
 
     suspend fun dismissReminderEvent(event: ReminderEvent): Result<Unit> {
+        if (isLocalMode) return localDismissReminderEvent(event)
         var docPath = "users/${auth.currentUser?.uid ?: "unauthenticated"}/reminders/${event.id}"
         return try {
             val uid = requireUserId()
@@ -1274,6 +1332,7 @@ class TaskFlowRepository(
         resolutionLabel: String,
         deviceId: String
     ): Result<Unit> {
+        if (isLocalMode) return localResolveConflict(conflict, chosenTitle, chosenContent, resolutionLabel, deviceId)
         var docPath = "users/${conflict.userId}/${conflict.entityType.lowercase()}s/${conflict.entityId}"
         return try {
             val uid = requireUserId()
@@ -1333,6 +1392,7 @@ class TaskFlowRepository(
         tasks: List<TaskItem>,
         notes: List<NoteItem>
     ): Result<BackupSnapshot> {
+        if (isLocalMode) return localCreateCloudBackup(label, projects, tasks, notes)
         var docPath = "users/${auth.currentUser?.uid ?: "unauthenticated"}/backups"
         return try {
             val uid = requireUserId()
@@ -1405,6 +1465,7 @@ class TaskFlowRepository(
         preview: BackupPreview,
         deviceId: String
     ): Result<RestoreResult> {
+        if (isLocalMode) return localRestoreFromPreview(preview, deviceId)
         return try {
             val uid = requireUserId()
             val userDoc = db.collection("users").document(uid)
@@ -1449,6 +1510,770 @@ class TaskFlowRepository(
             Result.failure(e)
         }
     }
+
+    // ==================== MODE LOKAL (TANPA FIREBASE) ====================
+    //
+    // Seluruh operasi di bawah hanya berjalan ketika repository dibuat dengan
+    // isLocalMode = true (flag TaskFlowLocalMode). Semantik meniru jalur cloud
+    // satu-per-satu: revision monoton per tulisan, soft delete, spawn tugas
+    // berulang dengan ID deterministik, idempotensi aksi notifikasi, dan
+    // pencatatan log — hanya medianya Room, bukan Firestore.
+
+    private val localStore by lazy { LocalTaskFlowStore(localDb) }
+
+    private fun localUid(): String = TaskFlowLocalMode.LOCAL_USER_ID
+
+    private fun localNow(): Timestamp = Timestamp(
+        System.currentTimeMillis() / 1000L,
+        ((System.currentTimeMillis() % 1000L) * 1_000_000L).toInt()
+    )
+
+    private suspend fun localEnsureUserProfile(): Result<Unit> = try {
+        val uid = localUid()
+        localStore.ensureProfile(uid, "Pengguna Lokal")
+        Result.success(Unit)
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        Result.failure(e)
+    }
+
+    private suspend fun localTriggerManualSync(userId: String): Result<Unit> {
+        _syncMetadata.value = _syncMetadata.value.copy(
+            state = SyncState.LOCAL_ONLY,
+            pendingWritesCount = 0,
+            lastSyncedAtMillis = System.currentTimeMillis(),
+            lastErrorMessage = null
+        )
+        recordLog(userId, "SYNC", "workspace", "MANUAL_SYNC", "LOCAL", "Mode lokal: sinkronisasi cloud nonaktif")
+        return Result.success(Unit)
+    }
+
+    private suspend fun localCreateTask(
+        title: String,
+        description: String,
+        status: TaskStatus,
+        priority: TaskPriority,
+        category: String,
+        projectId: String?,
+        dueAtMillis: Long?,
+        reminderAtMillis: Long?,
+        recurrence: RecurrenceRule,
+        tags: List<String>,
+        subtasks: List<SubtaskItem>,
+        deviceId: String,
+        explicitDocId: String?
+    ): Result<TaskItem> {
+        val uid = localUid()
+        return try {
+            val cleanTitle = title.trim().take(160)
+            require(cleanTitle.isNotEmpty()) { "Judul tugas tidak boleh kosong." }
+            val cleanDesc = description.trim().take(4000)
+            val cleanCat = category.trim().take(40).ifEmpty { "Personal" }
+            val cleanTags = tags.map { it.trim().take(32) }.filter { it.isNotEmpty() }.distinct().take(10)
+            val cleanSubtasks = subtasks.filter { it.title.isNotBlank() }.take(20)
+            val cleanDevice = deviceId.trim().take(80).ifEmpty { "android" }
+            val id = if (!explicitDocId.isNullOrBlank() && explicitDocId.matches(Regex("^[a-zA-Z0-9_\\-]{1,128}$"))) {
+                explicitDocId
+            } else {
+                "tsk_${UUID.randomUUID().toString().replace("-", "").take(16)}"
+            }
+            val now = localNow()
+            val task = TaskItem(
+                id = id,
+                userId = uid,
+                title = cleanTitle,
+                description = cleanDesc,
+                status = status.name,
+                priority = priority.name,
+                category = cleanCat,
+                projectId = projectId?.takeIf { it.isNotBlank() },
+                dueAtMillis = dueAtMillis,
+                reminderAtMillis = reminderAtMillis,
+                completedAtMillis = if (status == TaskStatus.COMPLETED) System.currentTimeMillis() else null,
+                recurrence = recurrence.name,
+                tags = cleanTags,
+                subtasks = cleanSubtasks,
+                revision = 1L,
+                deviceId = cleanDevice,
+                createdAt = now,
+                updatedAt = now
+            )
+            localStore.upsertTask(uid, task)
+            recordLog(uid, "TASK", id, "CREATE", "LOCAL", cleanTitle)
+            if (reminderAtMillis != null) {
+                logReminderEvent(
+                    uid = uid,
+                    taskId = id,
+                    title = cleanTitle,
+                    message = "Pengingat dijadwalkan untuk \"$cleanTitle\"",
+                    type = ReminderType.TASK_REMINDER,
+                    scheduledAtMillis = reminderAtMillis
+                )
+            }
+            Result.success(task)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            recordLog(uid, "TASK", "create", "CREATE", "FAILED", e.message ?: "Gagal")
+            Result.failure(e)
+        }
+    }
+
+    private suspend fun localUpdateTask(
+        existing: TaskItem,
+        title: String,
+        description: String,
+        status: TaskStatus,
+        priority: TaskPriority,
+        category: String,
+        projectId: String?,
+        dueAtMillis: Long?,
+        reminderAtMillis: Long?,
+        recurrence: RecurrenceRule,
+        tags: List<String>,
+        subtasks: List<SubtaskItem>,
+        deviceId: String
+    ): Result<Boolean> {
+        val uid = localUid()
+        return try {
+            require(existing.id.isNotBlank()) { "ID tugas tidak valid." }
+            val cleanTitle = title.trim().take(160)
+            require(cleanTitle.isNotEmpty()) { "Judul tugas tidak boleh kosong." }
+            val current = localStore.getTask(uid, existing.id) ?: existing
+            val updated = current.copy(
+                title = cleanTitle,
+                description = description.trim().take(4000),
+                status = status.name,
+                priority = priority.name,
+                category = category.trim().take(40).ifEmpty { "Personal" },
+                projectId = projectId?.takeIf { it.isNotBlank() },
+                dueAtMillis = dueAtMillis,
+                reminderAtMillis = reminderAtMillis,
+                completedAtMillis = if (status == TaskStatus.COMPLETED) {
+                    current.completedAtMillis ?: System.currentTimeMillis()
+                } else null,
+                recurrence = recurrence.name,
+                tags = tags.map { it.trim().take(32) }.filter { it.isNotEmpty() }.distinct().take(10),
+                subtasks = subtasks.filter { it.title.isNotBlank() }.take(20),
+                revision = current.revision + 1L,
+                deviceId = deviceId.trim().take(80).ifEmpty { "android" },
+                updatedAt = localNow()
+            )
+            localStore.upsertTask(uid, updated)
+            recordLog(uid, "TASK", existing.id, "UPDATE", "LOCAL", "$cleanTitle (rev lokal +1)")
+            if (reminderAtMillis != null && reminderAtMillis != current.reminderAtMillis) {
+                logReminderEvent(
+                    uid = uid,
+                    taskId = existing.id,
+                    title = cleanTitle,
+                    message = "Pengingat diperbarui untuk \"$cleanTitle\"",
+                    type = ReminderType.TASK_REMINDER,
+                    scheduledAtMillis = reminderAtMillis
+                )
+            }
+            Result.success(true)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            recordLog(uid, "TASK", existing.id, "UPDATE", "FAILED", e.message ?: "Gagal")
+            Result.failure(e)
+        }
+    }
+
+    private suspend fun localToggleTaskCompletion(task: TaskItem, deviceId: String): Result<TaskItem?> {
+        val uid = localUid()
+        return try {
+            val current = localStore.getTask(uid, task.id) ?: task
+            val completing = current.taskStatus != TaskStatus.COMPLETED
+            val nextStatus = if (completing) TaskStatus.COMPLETED else TaskStatus.TODO
+            val cleanDevice = deviceId.trim().take(80).ifEmpty { "android" }
+            val updated = current.copy(
+                status = nextStatus.name,
+                completedAtMillis = if (completing) System.currentTimeMillis() else null,
+                revision = current.revision + 1L,
+                deviceId = cleanDevice,
+                updatedAt = localNow()
+            )
+            localStore.upsertTask(uid, updated)
+
+            // C-06/FR-026: tugas berulang men-spawn kemunculan berikutnya dengan
+            // ID deterministik — idempoten bila aksi diulang.
+            var spawned: TaskItem? = null
+            if (completing && current.recurrenceRule != RecurrenceRule.NONE) {
+                val nextDue = computeNextOccurrenceMillis(
+                    current.dueAtMillis ?: System.currentTimeMillis(),
+                    current.recurrenceRule
+                )
+                val nextReminder = current.reminderAtMillis?.let {
+                    computeNextOccurrenceMillis(it, current.recurrenceRule)
+                }
+                val nextId = buildOccurrenceDocId(current.id, nextDue)
+                if (localStore.getTask(uid, nextId) == null) {
+                    val now = localNow()
+                    val spawn = TaskItem(
+                        id = nextId,
+                        userId = uid,
+                        title = current.title,
+                        description = current.description,
+                        status = TaskStatus.TODO.name,
+                        priority = current.priority,
+                        category = current.category,
+                        projectId = current.projectId,
+                        dueAtMillis = nextDue,
+                        reminderAtMillis = nextReminder,
+                        recurrence = current.recurrence,
+                        tags = current.tags,
+                        subtasks = current.subtasks.map { it.copy(done = false) },
+                        revision = 1L,
+                        deviceId = cleanDevice,
+                        createdAt = now,
+                        updatedAt = now
+                    )
+                    localStore.upsertTask(uid, spawn)
+                    nextReminder?.let {
+                        localStore.upsertReminder(
+                            uid,
+                            ReminderEvent(
+                                id = newReminderDocId(),
+                                userId = uid,
+                                taskId = current.id,
+                                title = current.title,
+                                message = "Pengingat dijadwalkan untuk \"${current.title}\"",
+                                reminderType = ReminderType.TASK_REMINDER.name,
+                                scheduledAtMillis = it,
+                                dismissed = false,
+                                createdAt = now,
+                                updatedAt = now
+                            )
+                        )
+                    }
+                    spawned = spawn
+                }
+            }
+            recordLog(uid, "TASK", task.id, if (completing) "COMPLETE" else "REOPEN", "LOCAL", task.title)
+            spawned?.let { recordLog(uid, "TASK", it.id, "SPAWN", "LOCAL", "Kemunculan berikutnya: ${it.title}") }
+            Result.success(spawned)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            recordLog(uid, "TASK", task.id, "COMPLETE", "FAILED", e.message ?: "Gagal")
+            Result.failure(e)
+        }
+    }
+
+    private suspend fun localCompleteTaskFromNotification(taskId: String, deviceId: String): Result<Unit> {
+        val uid = localUid()
+        return try {
+            require(taskId.isNotBlank()) { "ID tugas tidak valid." }
+            val task = localStore.getTask(uid, taskId)
+            // Idempoten: tugas hilang atau sudah selesai tidak ditulis ulang.
+            if (task == null || task.taskStatus == TaskStatus.COMPLETED) {
+                return Result.success(Unit)
+            }
+            localToggleTaskCompletion(task, deviceId)
+            recordLog(uid, "TASK", taskId, "COMPLETE", "LOCAL", "Selesai dari notifikasi")
+            Result.success(Unit)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            recordLog(uid, "TASK", taskId, "COMPLETE", "FAILED", e.message ?: "Gagal")
+            Result.failure(e)
+        }
+    }
+
+    private suspend fun localToggleSubtask(task: TaskItem, subtaskId: String, deviceId: String): Result<Unit> {
+        val uid = localUid()
+        return try {
+            val current = localStore.getTask(uid, task.id) ?: task
+            val updated = current.copy(
+                subtasks = current.subtasks.map {
+                    if (it.id == subtaskId) it.copy(done = !it.done) else it
+                },
+                revision = current.revision + 1L,
+                deviceId = deviceId.ifBlank { "android" },
+                updatedAt = localNow()
+            )
+            localStore.upsertTask(uid, updated)
+            Result.success(Unit)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    private suspend fun localRescheduleTask(task: TaskItem, newDueMillis: Long?, deviceId: String): Result<Unit> {
+        val uid = localUid()
+        return try {
+            val current = localStore.getTask(uid, task.id) ?: task
+            localStore.upsertTask(
+                uid,
+                current.copy(
+                    dueAtMillis = newDueMillis,
+                    revision = current.revision + 1L,
+                    deviceId = deviceId.ifBlank { "android" },
+                    updatedAt = localNow()
+                )
+            )
+            recordLog(uid, "TASK", task.id, "RESCHEDULE", "LOCAL", task.title)
+            Result.success(Unit)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    private suspend fun localArchiveTask(task: TaskItem, archive: Boolean, deviceId: String): Result<Unit> {
+        val uid = localUid()
+        return try {
+            val current = localStore.getTask(uid, task.id) ?: task
+            localStore.upsertTask(
+                uid,
+                current.copy(
+                    archived = archive,
+                    revision = current.revision + 1L,
+                    deviceId = deviceId.ifBlank { "android" },
+                    updatedAt = localNow()
+                )
+            )
+            recordLog(uid, "TASK", task.id, if (archive) "ARCHIVE" else "UNARCHIVE", "LOCAL", task.title)
+            Result.success(Unit)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    private suspend fun localSoftDeleteTask(task: TaskItem, deviceId: String): Result<Unit> {
+        val uid = localUid()
+        return try {
+            val current = localStore.getTask(uid, task.id) ?: task
+            localStore.upsertTask(
+                uid,
+                current.copy(
+                    deleted = true,
+                    revision = current.revision + 1L,
+                    deviceId = deviceId.ifBlank { "android" },
+                    updatedAt = localNow()
+                )
+            )
+            recordLog(uid, "TASK", task.id, "SOFT_DELETE", "LOCAL", task.title)
+            Result.success(Unit)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    private suspend fun localCreateNote(
+        title: String,
+        content: String,
+        category: String,
+        projectId: String?,
+        tags: List<String>,
+        linkedTaskIds: List<String>,
+        deviceId: String,
+        explicitDocId: String?
+    ): Result<NoteItem> {
+        val uid = localUid()
+        return try {
+            val cleanTitle = title.trim().take(160)
+            val cleanContent = content.take(50000)
+            val cleanCat = category.trim().take(40).ifEmpty { "Personal" }
+            val cleanTags = tags.map { it.trim().take(32) }.filter { it.isNotEmpty() }.distinct().take(10)
+            val cleanLinks = linkedTaskIds.distinct().take(20)
+            val words = countWords("$cleanTitle $cleanContent")
+            val cleanDevice = deviceId.trim().take(80).ifEmpty { "android" }
+            val id = if (!explicitDocId.isNullOrBlank() && explicitDocId.matches(Regex("^[a-zA-Z0-9_\\-]{1,128}$"))) {
+                explicitDocId
+            } else {
+                "nte_${UUID.randomUUID().toString().replace("-", "").take(16)}"
+            }
+            val now = localNow()
+            val note = NoteItem(
+                id = id,
+                userId = uid,
+                title = cleanTitle,
+                content = cleanContent,
+                category = cleanCat,
+                projectId = projectId?.takeIf { it.isNotBlank() },
+                tags = cleanTags,
+                linkedTaskIds = cleanLinks,
+                wordCount = words,
+                revision = 1L,
+                deviceId = cleanDevice,
+                createdAt = now,
+                updatedAt = now
+            )
+            localStore.upsertNote(uid, note)
+            clearNoteDraftLocally(uid, null)
+            recordLog(uid, "NOTE", id, "CREATE", "LOCAL", cleanTitle.ifBlank { "Catatan tanpa judul" })
+            Result.success(note)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            recordLog(uid, "NOTE", "create", "CREATE", "FAILED", e.message ?: "Gagal")
+            Result.failure(e)
+        }
+    }
+
+    private suspend fun localUpdateNote(
+        existing: NoteItem,
+        title: String,
+        content: String,
+        category: String,
+        projectId: String?,
+        tags: List<String>,
+        linkedTaskIds: List<String>,
+        deviceId: String
+    ): Result<Boolean> {
+        val uid = localUid()
+        return try {
+            require(existing.id.isNotBlank()) { "ID catatan tidak valid." }
+            val cleanTitle = title.trim().take(160)
+            val cleanContent = content.take(50000)
+            val current = localStore.getNote(uid, existing.id) ?: existing
+            val words = countWords("$cleanTitle $cleanContent")
+            localStore.upsertNote(
+                uid,
+                current.copy(
+                    title = cleanTitle,
+                    content = cleanContent,
+                    category = category.trim().take(40).ifEmpty { "Personal" },
+                    projectId = projectId?.takeIf { it.isNotBlank() },
+                    tags = tags.map { it.trim().take(32) }.filter { it.isNotEmpty() }.distinct().take(10),
+                    linkedTaskIds = linkedTaskIds.distinct().take(20),
+                    wordCount = words,
+                    revision = current.revision + 1L,
+                    deviceId = deviceId.trim().take(80).ifEmpty { "android" },
+                    updatedAt = localNow()
+                )
+            )
+            clearNoteDraftLocally(uid, existing.id)
+            recordLog(uid, "NOTE", existing.id, "UPDATE", "LOCAL", "${cleanTitle.ifBlank { "Catatan" }} (rev lokal +1)")
+            Result.success(true)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            recordLog(uid, "NOTE", existing.id, "UPDATE", "FAILED", e.message ?: "Gagal")
+            Result.failure(e)
+        }
+    }
+
+    private suspend fun localUpdateNoteFlags(
+        note: NoteItem,
+        pinned: Boolean,
+        favorite: Boolean,
+        archived: Boolean,
+        deleted: Boolean,
+        deviceId: String
+    ): Result<Unit> {
+        val uid = localUid()
+        return try {
+            val current = localStore.getNote(uid, note.id) ?: note
+            localStore.upsertNote(
+                uid,
+                current.copy(
+                    pinned = pinned,
+                    favorite = favorite,
+                    archived = archived,
+                    deleted = deleted,
+                    revision = current.revision + 1L,
+                    deviceId = deviceId.ifBlank { "android" },
+                    updatedAt = localNow()
+                )
+            )
+            Result.success(Unit)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    private suspend fun localCreateProject(
+        name: String,
+        description: String?,
+        colorHex: String,
+        iconName: String,
+        explicitDocId: String?
+    ): Result<ProjectItem> {
+        val uid = localUid()
+        return try {
+            val cleanName = name.trim().take(80)
+            require(cleanName.isNotEmpty()) { "Nama proyek tidak boleh kosong." }
+            val cleanDesc = description?.trim()?.take(500)?.takeIf { it.isNotEmpty() }
+            val cleanColor = colorHex.trim().take(9).ifEmpty { "#0F5257" }
+            val cleanIcon = iconName.trim().take(40).ifEmpty { "folder" }
+            val id = if (!explicitDocId.isNullOrBlank() && explicitDocId.matches(Regex("^[a-zA-Z0-9_\\-]{1,128}$"))) {
+                explicitDocId
+            } else {
+                "prj_${UUID.randomUUID().toString().replace("-", "").take(16)}"
+            }
+            val now = localNow()
+            val project = ProjectItem(
+                id = id,
+                userId = uid,
+                name = cleanName,
+                description = cleanDesc,
+                colorHex = cleanColor,
+                iconName = cleanIcon,
+                createdAt = now,
+                updatedAt = now
+            )
+            localStore.upsertProject(uid, project)
+            recordLog(uid, "PROJECT", id, "CREATE", "LOCAL", cleanName)
+            Result.success(project)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            recordLog(uid, "PROJECT", "create", "CREATE", "FAILED", e.message ?: "Gagal")
+            Result.failure(e)
+        }
+    }
+
+    private suspend fun localUpdateProject(
+        existing: ProjectItem,
+        name: String,
+        description: String?,
+        colorHex: String,
+        archived: Boolean
+    ): Result<Unit> {
+        val uid = localUid()
+        return try {
+            require(existing.id.isNotBlank()) { "ID proyek tidak valid." }
+            val cleanName = name.trim().take(80)
+            require(cleanName.isNotEmpty()) { "Nama proyek tidak boleh kosong." }
+            val current = localStore.getProject(uid, existing.id) ?: existing
+            localStore.upsertProject(
+                uid,
+                current.copy(
+                    name = cleanName,
+                    description = description?.trim()?.take(500)?.takeIf { it.isNotEmpty() },
+                    colorHex = colorHex.take(9),
+                    archived = archived,
+                    revision = current.revision + 1L,
+                    updatedAt = localNow()
+                )
+            )
+            Result.success(Unit)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    /** PRD 6.6: hapus proyek tidak pernah menghapus item tertaut — hanya melepas tautan. */
+    private suspend fun localSafeDeleteProject(
+        project: ProjectItem,
+        linkedTasks: List<TaskItem>,
+        linkedNotes: List<NoteItem>,
+        deviceId: String
+    ): Result<Unit> {
+        val uid = localUid()
+        return try {
+            val now = localNow()
+            linkedTasks.forEach { t ->
+                val current = localStore.getTask(uid, t.id) ?: t
+                localStore.upsertTask(
+                    uid,
+                    current.copy(projectId = null, revision = current.revision + 1L, updatedAt = now)
+                )
+            }
+            linkedNotes.forEach { n ->
+                val current = localStore.getNote(uid, n.id) ?: n
+                localStore.upsertNote(
+                    uid,
+                    current.copy(projectId = null, revision = current.revision + 1L, updatedAt = now)
+                )
+            }
+            val current = localStore.getProject(uid, project.id) ?: project
+            localStore.upsertProject(
+                uid,
+                current.copy(deleted = true, revision = current.revision + 1L, updatedAt = now)
+            )
+            recordLog(
+                uid, "PROJECT", project.id, "SAFE_DELETE", "LOCAL",
+                "Proyek dihapus, ${linkedTasks.size} tugas & ${linkedNotes.size} catatan tetap aman"
+            )
+            Result.success(Unit)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    private suspend fun localLogReminderEvent(
+        uid: String,
+        taskId: String?,
+        title: String,
+        message: String,
+        type: ReminderType,
+        scheduledAtMillis: Long
+    ): Result<Unit> {
+        return try {
+            val now = localNow()
+            localStore.upsertReminder(
+                uid,
+                ReminderEvent(
+                    id = newReminderDocId(),
+                    userId = uid,
+                    taskId = taskId?.takeIf { it.isNotBlank() },
+                    title = title.trim().take(160).ifEmpty { "Pengingat" },
+                    message = message.trim().take(500),
+                    reminderType = type.name,
+                    scheduledAtMillis = scheduledAtMillis.coerceAtLeast(0L),
+                    dismissed = false,
+                    createdAt = now,
+                    updatedAt = now
+                )
+            )
+            Result.success(Unit)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    private suspend fun localSnoozeReminderEvent(event: ReminderEvent, delayMinutes: Int): Result<Long> {
+        val uid = localUid()
+        return try {
+            val newTime = System.currentTimeMillis() + delayMinutes * 60_000L
+            localStore.upsertReminder(
+                uid,
+                event.copy(
+                    snoozedUntilMillis = newTime,
+                    scheduledAtMillis = newTime,
+                    dismissed = false,
+                    updatedAt = localNow()
+                )
+            )
+            Result.success(newTime)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    private suspend fun localDismissReminderEvent(event: ReminderEvent): Result<Unit> {
+        val uid = localUid()
+        return try {
+            localStore.upsertReminder(
+                uid,
+                event.copy(dismissed = true, updatedAt = localNow())
+            )
+            Result.success(Unit)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    private suspend fun localResolveConflict(
+        conflict: SyncConflictEntity,
+        chosenTitle: String,
+        chosenContent: String,
+        resolutionLabel: String,
+        deviceId: String
+    ): Result<Unit> {
+        // Konflik lintas perangkat tidak mungkin terjadi di mode lokal —
+        // konflik lama (bila ada) cukup ditandai selesai.
+        return try {
+            localDb.syncConflictDao().markResolved(conflict.conflictId)
+            recordLog(conflict.userId, conflict.entityType, conflict.entityId, "CONFLICT_RESOLVED", "LOCAL", resolutionLabel)
+            _syncMetadata.value = _syncMetadata.value.copy(state = SyncState.LOCAL_ONLY)
+            Result.success(Unit)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    private suspend fun localCreateCloudBackup(
+        label: String,
+        projects: List<ProjectItem>,
+        tasks: List<TaskItem>,
+        notes: List<NoteItem>
+    ): Result<BackupSnapshot> {
+        val uid = localUid()
+        return try {
+            val activeProjects = projects.filter { !it.deleted }
+            val activeTasks = tasks.filter { !it.deleted }
+            val activeNotes = notes.filter { !it.deleted }
+            val (_, checksum) = LocalBackupCodec.encodeToJson(label, activeProjects, activeTasks, activeNotes)
+            val snapshotMap = LocalBackupCodec.buildNativeSnapshotMap(activeProjects, activeTasks, activeNotes)
+            val now = localNow()
+            val backup = BackupSnapshot(
+                id = "bkp_${UUID.randomUUID().toString().replace("-", "").take(16)}",
+                userId = uid,
+                formatVersion = LocalBackupCodec.CURRENT_FORMAT_VERSION.toLong(),
+                label = label.trim().take(120).ifEmpty { "Backup Lokal" },
+                taskCount = activeTasks.size.toLong(),
+                noteCount = activeNotes.size.toLong(),
+                projectCount = activeProjects.size.toLong(),
+                checksum = checksum,
+                snapshotData = snapshotMap,
+                createdAt = now,
+                updatedAt = now
+            )
+            localStore.upsertBackup(uid, backup)
+            localStore.updateProfileBackupTime(uid, System.currentTimeMillis())
+            recordLog(
+                uid, "BACKUP", backup.id, "LOCAL_BACKUP", "LOCAL",
+                "$label (${activeTasks.size} tugas, ${activeNotes.size} catatan)"
+            )
+            Result.success(backup)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            recordLog(uid, "BACKUP", "backup", "LOCAL_BACKUP", "FAILED", e.message ?: "Gagal")
+            Result.failure(e)
+        }
+    }
+
+    /** C-05: jalur restore yang sama — merge, bukan timpa; dilewati bila masih hidup. */
+    private suspend fun localRestoreFromPreview(preview: BackupPreview, deviceId: String): Result<RestoreResult> {
+        val uid = localUid()
+        return try {
+            val plan = RestorePlanner.buildRestorePlan(
+                uid = uid,
+                deviceId = deviceId,
+                preview = preview,
+                existingProjects = localStore.listProjects(uid).associate {
+                    it.id to RestorePlanner.ExistingDoc(it.revision, it.deleted, it.createdAt?.toDate()?.time)
+                },
+                existingTasks = localStore.listTasks(uid).associate {
+                    it.id to RestorePlanner.ExistingDoc(it.revision, it.deleted, it.createdAt?.toDate()?.time)
+                },
+                existingNotes = localStore.listNotes(uid).associate {
+                    it.id to RestorePlanner.ExistingDoc(it.revision, it.deleted, it.createdAt?.toDate()?.time)
+                }
+            )
+            localStore.applyRestoreWrites(uid, plan.writes)
+            recordLog(
+                uid, "BACKUP", "restore", "RESTORE", "LOCAL",
+                "Memulihkan ${plan.restoredCount} item, ${plan.skippedCount} dilewati (sudah ada)"
+            )
+            Result.success(RestoreResult(plan.restoredCount, plan.skippedCount))
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            recordLog(uid, "BACKUP", "restore", "RESTORE", "FAILED", e.message ?: "Gagal")
+            Result.failure(e)
+        }
+    }
+
+    // ==================== HELPER PRIVATE ====================
 
     private fun newReminderDocId(): String =
         "rem_${UUID.randomUUID().toString().replace("-", "").take(16)}"

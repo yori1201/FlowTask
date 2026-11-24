@@ -35,6 +35,7 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -180,7 +181,8 @@ fun signOut(
 
 @Composable
 fun AuthScreen(
-    onAuthSuccess: () -> Unit
+    onAuthSuccess: () -> Unit,
+    onUseLocalMode: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -428,9 +430,37 @@ fun AuthScreen(
                     }
                 }
 
+                Spacer(Modifier.height(12.dp))
+
+                // Mode lokal: aplikasi tetap sepenuhnya berfungsi tanpa akun
+                // Google dan tanpa koneksi Firebase — data tersimpan di
+                // perangkat (Room) dan tidak disinkronkan ke cloud.
+                OutlinedButton(
+                    onClick = onUseLocalMode,
+                    enabled = !isLoading,
+                    shape = MaterialTheme.shapes.medium,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(54.dp)
+                        .testTag("use_local_mode_button")
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.OfflinePin,
+                        contentDescription = null,
+                        modifier = Modifier.size(22.dp)
+                    )
+                    Spacer(Modifier.width(12.dp))
+                    Text(
+                        text = "Lanjutkan tanpa akun",
+                        style = MaterialTheme.typography.labelLarge
+                    )
+                }
+
                 Spacer(Modifier.height(10.dp))
                 Text(
-                    text = "Data Anda diisolasi penuh untuk akun pribadi Anda.",
+                    text = "Mode lokal: data hanya tersimpan di perangkat ini, " +
+                        "tanpa sinkronisasi cloud. Masuk dengan Google kapan saja " +
+                        "untuk mengaktifkan sinkronisasi lintas perangkat.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )

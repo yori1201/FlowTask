@@ -12,6 +12,7 @@ import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import com.example.MainActivity
 import com.example.R
+import com.example.data.local.TaskFlowLocalMode
 import com.example.data.local.UserPreferencesStore
 import com.example.data.remote.TaskFlowRepository
 import com.google.firebase.Firebase
@@ -108,8 +109,15 @@ class ReminderReceiver : BroadcastReceiver() {
 
             ReminderScheduler.ACTION_COMPLETE_TASK -> {
                 notificationManager.cancel(notificationId)
+                val appContext = context.applicationContext
+                // Mode lokal: aksi "Selesai" tetap berfungsi tanpa akun Google —
+                // uid efektif adalah pemilik data lokal.
                 val signedInUid = Firebase.auth.currentUser?.uid
-                if (taskId.isNotBlank() && !signedInUid.isNullOrBlank() && (userId.isBlank() || userId == signedInUid)) {
+                val localUid = if (TaskFlowLocalMode.isEnabled(appContext)) {
+                    TaskFlowLocalMode.LOCAL_USER_ID
+                } else null
+                val effectiveUid = signedInUid ?: localUid
+                if (taskId.isNotBlank() && effectiveUid != null && (userId.isBlank() || userId == effectiveUid)) {
                     val pendingResult = goAsync()
                     CoroutineScope(Dispatchers.IO).launch {
                         try {
@@ -117,7 +125,6 @@ class ReminderReceiver : BroadcastReceiver() {
                             // receiver. Jalur data tunggal melalui repository:
                             // revision + deviceId ikut ditulis dan tugas berulang
                             // men-spawn kemunculan berikutnya secara idempoten.
-                            val appContext = context.applicationContext
                             val repository = TaskFlowRepository(appContext)
                             val deviceId = UserPreferencesStore(appContext).getOrCreateDeviceId()
                             repository.completeTaskFromNotification(taskId, deviceId)

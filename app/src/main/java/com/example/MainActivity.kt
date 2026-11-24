@@ -61,6 +61,7 @@ import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import com.example.auth.AuthScreen
 import com.example.auth.signOut
+import com.example.data.local.TaskFlowLocalMode
 import com.example.data.local.UserPreferencesStore
 import com.example.data.local.UserSettings
 import com.example.data.remote.TaskFlowRepository
@@ -127,7 +128,9 @@ class MainActivity : ComponentActivity() {
 
 @Composable
 fun AppContent() {
+    val context = LocalContext.current
     var currentUser by remember { mutableStateOf(Firebase.auth.currentUser) }
+    var localModeEnabled by remember { mutableStateOf(TaskFlowLocalMode.isEnabled(context)) }
 
     DisposableEffect(Unit) {
         val listener = FirebaseAuth.AuthStateListener { auth ->
@@ -138,17 +141,37 @@ fun AppContent() {
     }
 
     val user = currentUser
-    if (user == null) {
-        AuthScreen(onAuthSuccess = { currentUser = Firebase.auth.currentUser })
-    } else {
-        val uid = user.uid
-        key(uid) {
-            TaskFlowWorkspace(
-                currentUserId = uid,
-                userDisplayName = user.displayName ?: user.email?.substringBefore("@") ?: "TaskFlow",
-                userEmail = user.email
-            )
+    when {
+        user != null -> {
+            val uid = user.uid
+            key(uid) {
+                TaskFlowWorkspace(
+                    currentUserId = uid,
+                    userDisplayName = user.displayName ?: user.email?.substringBefore("@") ?: "TaskFlow",
+                    userEmail = user.email,
+                    isLocalMode = false,
+                    onExitLocalMode = { }
+                )
+            }
         }
+        localModeEnabled -> {
+            key(TaskFlowLocalMode.LOCAL_USER_ID) {
+                TaskFlowWorkspace(
+                    currentUserId = TaskFlowLocalMode.LOCAL_USER_ID,
+                    userDisplayName = "Pengguna Lokal",
+                    userEmail = null,
+                    isLocalMode = true,
+                    onExitLocalMode = { localModeEnabled = false }
+                )
+            }
+        }
+        else -> AuthScreen(
+            onAuthSuccess = { currentUser = Firebase.auth.currentUser },
+            onUseLocalMode = {
+                TaskFlowLocalMode.enable(context)
+                localModeEnabled = true
+            }
+        )
     }
 }
 
@@ -156,7 +179,9 @@ fun AppContent() {
 private fun TaskFlowWorkspace(
     currentUserId: String,
     userDisplayName: String,
-    userEmail: String?
+    userEmail: String?,
+    isLocalMode: Boolean = false,
+    onExitLocalMode: () -> Unit = { }
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -501,6 +526,10 @@ private fun TaskFlowWorkspace(
                             onQuietHoursChange = { en, s, e -> viewModel.setQuietHours(en, s, e) },
                             onDailySummaryChange = { viewModel.setDailySummaryEnabled(it) },
                             onSignOut = {
+                                if (isLocalMode) {
+                                    TaskFlowLocalMode.disable(context)
+                                    onExitLocalMode()
+                                }
                                 signOut(credentialManager = credentialManager, scope = scope)
                             }
                         )
