@@ -24,3 +24,7 @@ firestore-debug.log
 
 # Dummy untuk CI/build lokal — GANTI dengan file asli dari Firebase Console
 app/google-services.json
+
+# Release signing (jangan commit ke repositori publik)
+my-upload-key.jks
+keystore.properties

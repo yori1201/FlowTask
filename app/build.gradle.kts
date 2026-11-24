@@ -17,8 +17,8 @@ android {
     // NFR-008 PRD: minimum Android API 26 (sebelumnya 24).
     minSdk = 26
     targetSdk = 36
-    versionCode = 2
-    versionName = "1.1.0"
+    versionCode = 3
+    versionName = "1.2.0"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
   }
@@ -70,7 +70,18 @@ android {
   // isReturnDefaultValues: panggilan android.util.Log dsb. dari dependensi JVM
   // (mis. SDK Firebase) mengembalikan nilai default, bukan melempar stub —
   // diperlukan agar unit test murni bisa memuat kelas SDK tanpa Robolectric.
-  testOptions { unitTests { isIncludeAndroidResources = true; isReturnDefaultValues = true } }
+  testOptions {
+    unitTests {
+      isIncludeAndroidResources = true
+      isReturnDefaultValues = true
+      // Robolectric mengunduh android-all-instrumented dari Maven Central saat
+      // pertama kali dijalankan; alihkan ke mirror agar tahan rate-limit
+      // (tambahkan juga pom). Jika mirror bermasalah, hapus baris ini.
+      all {
+        it.systemProperty("robolectric.dependency.repo.url", "https://repo.huaweicloud.com/repository/maven")
+      }
+    }
+  }
   dependenciesInfo {
     includeInApk = false
     includeInBundle = true
