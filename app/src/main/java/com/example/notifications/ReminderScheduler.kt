@@ -24,6 +24,20 @@ object ReminderScheduler {
     const val ACTION_SNOOZE_REMINDER = "com.example.action.SNOOZE_REMINDER"
     const val ACTION_COMPLETE_TASK = "com.example.action.COMPLETE_TASK"
 
+    /**
+     * C-09: request code stabil per tugas. ID TaskFlow berakhiran heksadesimal,
+     * jadi 8 karakter terakhir diparse menjadi int 32-bit penuh — lebih merata
+     * daripada String.hashCode dan bebas tabrakan antar ID yang mirip.
+     */
+    fun stableRequestCode(taskId: String): Int {
+        val hex = taskId.takeLast(8).lowercase()
+        return try {
+            Integer.parseUnsignedInt(hex, 16)
+        } catch (_: IllegalArgumentException) {
+            kotlin.math.abs(taskId.hashCode())
+        }
+    }
+
     fun ensureChannel(context: Context) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
@@ -126,7 +140,7 @@ object ReminderScheduler {
         }
         val pending = PendingIntent.getBroadcast(
             context,
-            taskId.hashCode(),
+            stableRequestCode(taskId),
             intent,
             PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_IMMUTABLE
         )
@@ -164,7 +178,7 @@ object ReminderScheduler {
         }
         return PendingIntent.getBroadcast(
             context,
-            taskId.hashCode(),
+            stableRequestCode(taskId),
             intent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
